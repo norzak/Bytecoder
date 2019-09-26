@@ -17,42 +17,63 @@ package de.mirkosertic.bytecoder.ssa;
 
 public class Variable extends Value {
 
+    public static final String THISREF_NAME = "__tr";
+
     public static Variable createThisRef() {
-        Variable theVariable = new Variable(TypeRef.Native.REFERENCE, "thisRef", true);
-        theVariable.initializeWith(new SelfReferenceParameterValue());
+        final Variable theVariable = new Variable(TypeRef.Native.REFERENCE, THISREF_NAME, true, 0);
+        theVariable.initializeWith(new SelfReferenceParameterValue(), 0);
         return theVariable;
     }
 
-    public static Variable createMethodParameter(int aIndex, TypeRef aTypeRef) {
-        Variable theVariable = new Variable(aTypeRef, "p" + aIndex, true);
-        theVariable.initializeWith(new MethodParameterValue(aIndex, aTypeRef));
+    public static Variable createMethodParameter(final int aIndex, final TypeRef aTypeRef) {
+        final Variable theVariable = new Variable(aTypeRef, "p" + aIndex, true, 0);
+        theVariable.initializeWith(new MethodParameterValue(aIndex, aTypeRef), 0);
         return theVariable;
     }
 
-    public static Variable createMethodParameter(int aIndex, String aName, TypeRef aTypeRef) {
-        Variable theVariable = new Variable(aTypeRef, aName, true);
-        theVariable.initializeWith(new MethodParameterValue(aIndex, aTypeRef));
+    public static Variable createMethodParameter(final int aIndex, final String aName, final TypeRef aTypeRef) {
+        final Variable theVariable = new Variable(aTypeRef, aName, true, 0);
+        theVariable.initializeWith(new MethodParameterValue(aIndex, aTypeRef), 0);
         return theVariable;
     }
 
     private final TypeRef type;
     private final String name;
     private final boolean synthetic;
+    private final LiveRange liveRange;
 
-    private Variable(TypeRef aType, String aName, boolean aSsynthetic) {
+    private Variable(final TypeRef aType, final String aName, final boolean aSynthetic, final long aDefinedAt) {
         type = aType;
         name = aName;
-        synthetic = aSsynthetic;
+        synthetic = aSynthetic;
+        liveRange = new LiveRange(aDefinedAt, aDefinedAt);
     }
 
-    public Variable(TypeRef aType, String aName) {
-        this(aType, aName, false);
+    public Variable(final TypeRef aType, final String aName, final long definedAt) {
+        this(aType, aName, false, definedAt);
     }
 
-    public void initializeWith(Value aValue) {
+    public LiveRange liveRange() {
+        return liveRange;
+    }
+
+    public void initializeWith(final Value aValue, final long analysisTime) {
         // Test there is a videst type available
         type.resolve().eventuallyPromoteTo(aValue.resolveType().resolve());
-        aValue.addEdgeTo(new DataFlowEdgeType(), this);
+        aValue.addEdgeTo(DataFlowEdgeType.instance, this);
+        liveRange.usedAt(analysisTime);
+
+        markUsageIn(aValue, analysisTime);
+    }
+
+    private void markUsageIn(final Value aValue, final long analysisTime) {
+        if (aValue instanceof Variable) {
+            ((Variable) aValue).liveRange().usedAt(analysisTime);
+        } else {
+            for (final Value theValue : aValue.incomingDataFlows()) {
+                markUsageIn(theValue, analysisTime);
+            }
+        }
     }
 
     @Override

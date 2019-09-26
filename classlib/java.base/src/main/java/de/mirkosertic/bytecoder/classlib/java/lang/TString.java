@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Mirko Sertic
+ * Copyright 2018 Mirko Sertic
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,97 +15,140 @@
  */
 package de.mirkosertic.bytecoder.classlib.java.lang;
 
-import de.mirkosertic.bytecoder.api.NoExceptionCheck;
-import de.mirkosertic.bytecoder.classlib.java.io.TSerializable;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
-public class TString extends TObject implements TSerializable, TComparable<TString>, TCharSequence {
+import de.mirkosertic.bytecoder.api.SubstitutesInClass;
+
+@SubstitutesInClass(completeReplace = true)
+public class TString implements java.io.Serializable, Comparable<String> {
+
+    static void checkBoundsOffCount(final int offset, final int count, final int length) {
+        if (offset < 0 || count < 0 || offset > length - count) {
+            throw new StringIndexOutOfBoundsException(
+                    "offset " + offset + ", count " + count + ", length " + length);
+        }
+    }
+
+    static final byte LATIN1 = 0;
+    static final byte UTF16  = 1;
+
+    static final boolean COMPACT_STRINGS = false;
 
     private int computedHash;
-    private byte[] data;
+    private final char[] data;
 
-    @NoExceptionCheck
-    public TString(int aSize) {
-        data = new byte[aSize];
+    public TString(final int aSize) {
+        data = new char[aSize];
         for (int i=0;i<aSize;i++) {
             data[i] = 0;
         }
     }
 
-    @NoExceptionCheck
-    public TString(char[] aData) {
-        data = new byte[aData.length];
+    public TString(final char[] aData) {
+        data = new char[aData.length];
         for (int i=0;i<aData.length;i++) {
-            data[i] = (byte) aData[i];
+            data[i] = aData[i];
         }
     }
 
-    public void setCharAt(int aIndex, byte aChar) {
-        data[aIndex] = aChar;
+    public TString(final char[] value, final int offset, final int count) {
+        data = new char[count];
+        for (int i=0;i<count;i++) {
+            data[i] = value[offset + i];
+        }
+    }
+
+    public TString(final byte[] value, final byte coder) {
+        this(value, StandardCharsets.UTF_16);
+    }
+
+    public TString(final byte[] value, final int offset, final int length) {
+        this(Arrays.copyOfRange(value, offset, offset + length), StandardCharsets.UTF_16);
+    }
+
+    public TString(final byte[] aData) {
+        this(aData, Charset.defaultCharset());
+    }
+
+    public TString(final byte[] value, final Charset charset) {
+        final CharBuffer cb  = charset.decode(ByteBuffer.wrap(value));
+        data = Arrays.copyOf(cb.array(), cb.limit());
+    }
+
+    public TString(final TString aOtherString) {
+        data = aOtherString.data;
+    }
+
+    public TString(final int[] codePoints, final int offset, final int count) {
+        final StringBuilder sb = new StringBuilder();
+        for (int i = offset; i < offset + count;i++) {
+            sb.append(Character.toChars(codePoints[i]));
+        }
+        data = sb.toString().toCharArray();
+    }
+
+    public TString() {
+        data = new char[0];
     }
 
     @Override
     public String toString() {
-        Object a = this;
+        final Object a = this;
         return (String) a;
     }
 
-    @NoExceptionCheck
-    public TString(byte[] aData) {
-        data = aData;
+    public byte[] getBytes(final Charset charset) {
+        final CharBuffer cb = CharBuffer.wrap(data);
+        final ByteBuffer bb = charset.encode(cb);
+        return Arrays.copyOf(bb.array(), bb.limit());
     }
 
-    @NoExceptionCheck
-    public TString(TString aOtherString) {
-        data = aOtherString.data;
-    }
-
-    @NoExceptionCheck
-    public TString() {
-        data = new byte[0];
-    }
-
-    @Override
     public byte[] getBytes() {
-        return data;
+        return getBytes(Charset.defaultCharset());
+    }
+
+    public char charAt(final int aIndex) {
+        return data[aIndex];
     }
 
     @Override
-    public char charAt(int aIndex) {
-        return (char) data[aIndex];
-    }
-
-    @Override
-    public int compareTo(TString o) {
+    public int compareTo(final String o) {
         return 0;
     }
 
-    @Override
     public int length() {
         return data.length;
     }
 
     @Override
-    public boolean equals(Object aOtherObject) {
+    public boolean equals(final Object aOtherObject) {
         if (this == aOtherObject) {
             return true;
         }
-        if (!(aOtherObject instanceof TString)) {
+        if (!(aOtherObject instanceof String)) {
             return false;
         }
-        TString theOtherString = (TString) aOtherObject;
-        if (!(theOtherString.length() == data.length)) {
+        final String theOtherString = (String) aOtherObject;
+        final byte[] theOtherData = theOtherString.getBytes();
+        final byte[] thisData = this.getBytes();
+        if (thisData.length != theOtherData.length) {
             return false;
         }
-        for (int i=0;i<data.length;i++) {
-            if (data[i] != theOtherString.data[i]) {
+
+        for (int i=0;i<thisData.length;i++) {
+            if (thisData[i] != theOtherData[i]) {
                 return false;
             }
         }
         return true;
     }
 
-    public boolean equalsIgnoreCase(TString aOtherObject) {
-        if (this == aOtherObject) {
+    public boolean equalsIgnoreCase(final String aOtherObject) {
+        if ((Object) this == aOtherObject) {
             return true;
         }
         if (aOtherObject == null) {
@@ -115,7 +158,7 @@ public class TString extends TObject implements TSerializable, TComparable<TStri
             return false;
         }
         for (int i=0;i<data.length;i++) {
-            if (TCharacter.toLowerCase((char)data[i]) != TCharacter.toLowerCase((char) aOtherObject.data[i])) {
+            if (Character.toLowerCase((char)data[i]) != Character.toLowerCase(aOtherObject.charAt(i))) {
                 return false;
             }
         }
@@ -127,14 +170,14 @@ public class TString extends TObject implements TSerializable, TComparable<TStri
         int h = computedHash;
         if (h == 0 && data.length > 0) {
             for (int i = 0; i < data.length; i++) {
-                h = 31 * h + data[i];
+                h = 31 * h + (data[i] & 0xff);
             }
             computedHash = h;
         }
         return h;
     }
 
-    public int indexOf(int aChar) {
+    public int indexOf(final int aChar) {
         for (int i=0;i<data.length;i++) {
             if (data[i] == aChar) {
                 return i;
@@ -143,45 +186,117 @@ public class TString extends TObject implements TSerializable, TComparable<TStri
         return -1;
     }
 
-    public int lastIndexOf(TString aValue) {
+    public int lastIndexOf(final String aValue) {
         return -1;
     }
 
-    public TString substring(int aStart) {
-        int theLength = data.length - aStart;
-        byte[] theNewData = new byte[theLength];
+    public String substring(final int aStart) {
+        final int theLength = data.length - aStart;
+        final char[] theNewData = new char[theLength];
         for (int i=0;i<theLength;i++) {
             theNewData[i] = data[i + aStart];
         }
-        return new TString(theNewData);
+        return new String(theNewData);
     }
 
-    public TString substring(int aStart, int aEnd) {
-        int theLength = aEnd - aStart;
-        byte[] theNewData = new byte[theLength];
+    public String substring(final int aStart, final int aEnd) {
+        final int theLength = aEnd - aStart;
+        final char[] theNewData = new char[theLength];
         for (int i=0;i<theLength;i++) {
             theNewData[i] = data[i + aStart];
         }
-        return new TString(theNewData);
+        return new String(theNewData);
     }
 
-    public TString replace(char aOldChar, char aNewChar) {
-        byte[] theNewData = new byte[data.length];
+    public String replace(final char aOldChar, final char aNewChar) {
+        final char[] theNewData = new char[data.length];
         for (int i=0;i<data.length;i++) {
-            byte theData = data[i];
+            char theData = data[i];
             if (theData == aOldChar) {
-                theData = (byte) aNewChar;
+                theData = aNewChar;
             }
             theNewData[i] = theData;
         }
-        return new TString(theNewData);
+        return new String(theNewData);
     }
 
     public char[] toCharArray() {
-        char[] theResult = new char[data.length];
+        final char[] theResult = new char[data.length];
         for (int i=0;i<data.length;i++) {
             theResult[i] = (char) data[i];
         }
         return theResult;
+    }
+
+    public static String valueOf(final Object obj) {
+        return (obj == null) ? "null" : obj.toString();
+    }
+
+    public static String valueOf(final int aValue) {
+        return Integer.toString(aValue);
+    }
+
+    public static String valueOf(final double aValue) {
+        return Double.toString(aValue);
+    }
+
+    public static String valueOf(final char aValue) {
+        return new String(new byte[] {(byte) aValue});
+    }
+
+    public static String valueOf(final char[] data) {
+        return new String(data);
+    }
+
+    public static String valueOf(final long data) {
+        return Long.toString(data);
+    }
+
+    public static String format(final String aPattern, final Object[] aValues) {
+        return aPattern;
+    }
+
+    public String trim() {
+        int len = data.length;
+        int st = 0;
+        while ((st < len) && ((data[st] == ' ' || data[st] == '\u0000'))) {
+            st++;
+        }
+        while ((st < len) && ((data[len - 1] == ' ' || data[len - 1] == '\u0000'))) {
+            len--;
+        }
+        if (st > 0 || len < data.length) {
+            final char[] newData = new char[len - st];
+            for (int i=0;i<len-st;i++) {
+                newData[i] = (char) data[st + i];
+            }
+            return new String(newData);
+        }
+        final Object t = (this);
+        return (String) t;
+    }
+
+    public boolean startsWith(final String aOtherString) {
+        final int len = length();
+        final int otherlength = aOtherString.length();
+        if (otherlength == 0) {
+            return false;
+        }
+        if (len < otherlength) {
+            return false;
+        }
+        final byte[] theOtherData = aOtherString.getBytes();
+        for (int i=0;i<otherlength;i++) {
+            if (theOtherData[i] != data[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public void getChars(final int srcBegin, final int srcEnd, final char[] dst, int dstBegin) {
+        for (int i=srcBegin;i<srcEnd;i++) {
+            dst[dstBegin++]=data[i];
+        }
     }
 }

@@ -15,11 +15,14 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+
 public class ArrayStoreExpression extends Expression {
 
     private final TypeRef arrayType;
 
-    public ArrayStoreExpression(TypeRef aArrayType, Value aArray, Value aIndex, Value aValue) {
+    public ArrayStoreExpression(final Program aProgram, final BytecodeOpcodeAddress aAddress, final TypeRef aArrayType, final Value aArray, final Value aIndex, final Value aValue) {
+        super(aProgram, aAddress);
         arrayType = aArrayType;
         receivesDataFrom(aArray, aIndex, aValue);
     }

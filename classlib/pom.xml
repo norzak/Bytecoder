@@ -5,7 +5,7 @@
     <parent>
         <groupId>de.mirkosertic.bytecoder</groupId>
         <artifactId>bytecoder-parent</artifactId>
-        <version>2018-03-01-SNAPSHOT</version>
+        <version>0-SNAPSHOT</version>
     </parent>
 
     <artifactId>bytecoder-classlib</artifactId>
@@ -18,6 +18,7 @@
         <module>java.base</module>
         <module>bytecoder.opencl</module>
         <module>bytecoder.web</module>
+        <module>bytecoder.vue</module>
     </modules>
 
     <dependencyManagement>
@@ -40,6 +41,11 @@
             <dependency>
                 <groupId>e.mirkosertic.bytecoder</groupId>
                 <artifactId>bytecoder.web</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>e.mirkosertic.bytecoder</groupId>
+                <artifactId>bytecoder.vue</artifactId>
                 <version>${project.version}</version>
             </dependency>
         </dependencies>

@@ -15,8 +15,12 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.backend.js.JSIntrinsics;
 import de.mirkosertic.bytecoder.core.BytecodeAccessFlags;
+import de.mirkosertic.bytecoder.core.BytecodeAttributeInfo;
+import de.mirkosertic.bytecoder.core.BytecodeAttributes;
 import de.mirkosertic.bytecoder.core.BytecodeClass;
+import de.mirkosertic.bytecoder.core.BytecodeClassinfoConstant;
 import de.mirkosertic.bytecoder.core.BytecodeCodeAttributeInfo;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionACONSTNULL;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionGOTO;
@@ -34,6 +38,7 @@ import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
 import de.mirkosertic.bytecoder.core.BytecodePrimitiveTypeRef;
 import de.mirkosertic.bytecoder.core.BytecodeProgram;
 import de.mirkosertic.bytecoder.core.BytecodeTypeRef;
+import de.mirkosertic.bytecoder.core.BytecodeUtf8Constant;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -43,18 +48,24 @@ import static org.mockito.Mockito.when;
 
 public class NaiveProgramGeneratorTest {
 
-    private Program newProgramFrom(BytecodeProgram aProgram, BytecodeMethodSignature aSignature) {
+    private Program newProgramFrom(final BytecodeProgram aProgram, final BytecodeMethodSignature aSignature) {
 
-        BytecodeLinkerContext theContext = mock(BytecodeLinkerContext.class);
-        ProgramGenerator theGenerator = NaiveProgramGenerator.FACTORY.createFor(theContext);
+        final BytecodeLinkerContext theContext = mock(BytecodeLinkerContext.class);
+        final ProgramGenerator theGenerator = NaiveProgramGenerator.FACTORY.createFor(theContext, new JSIntrinsics());
 
-        BytecodeClass theClass = mock(BytecodeClass.class);
-        BytecodeMethod theMethod = mock(BytecodeMethod.class);
+        final BytecodeClassinfoConstant theThisConst = mock(BytecodeClassinfoConstant.class);
+        when(theThisConst.getConstant()).thenReturn(new BytecodeUtf8Constant("Testclass"));
+
+        final BytecodeClass theClass = mock(BytecodeClass.class);
+        when(theClass.getThisInfo()).thenReturn(theThisConst);
+        when(theClass.getAttributes()).thenReturn(new BytecodeAttributes(new BytecodeAttributeInfo[0]));
+
+        final BytecodeMethod theMethod = mock(BytecodeMethod.class);
         when(theMethod.getAccessFlags()).thenReturn(new BytecodeAccessFlags(0));
         when(theMethod.getSignature()).thenReturn(aSignature);
 
-        BytecodeCodeAttributeInfo theCodeAttribute = mock(BytecodeCodeAttributeInfo.class);
-        when(theCodeAttribute.getProgramm()).thenReturn(aProgram);
+        final BytecodeCodeAttributeInfo theCodeAttribute = mock(BytecodeCodeAttributeInfo.class);
+        when(theCodeAttribute.getProgram()).thenReturn(aProgram);
         when(theMethod.getCode(any())).thenReturn(theCodeAttribute);
 
         return theGenerator.generateFrom(theClass, theMethod);
@@ -62,20 +73,20 @@ public class NaiveProgramGeneratorTest {
 
     @Test
     public void testWithReturn() {
-        BytecodeProgram theBytecodeProgram = new BytecodeProgram();
+        final BytecodeProgram theBytecodeProgram = new BytecodeProgram();
         theBytecodeProgram.addInstruction(new BytecodeInstructionRETURN(BytecodeOpcodeAddress.START_AT_ZERO));
 
-        Program theProgram = newProgramFrom(theBytecodeProgram, new BytecodeMethodSignature(BytecodePrimitiveTypeRef.INT, new BytecodeTypeRef[] {BytecodePrimitiveTypeRef.INT, BytecodePrimitiveTypeRef.INT}));
-        assertEquals(0, theProgram.getVariables().size());
-        ControlFlowGraph theCFG = theProgram.getControlFlowGraph();
-        assertEquals(1, theCFG.getKnownNodes().size());
-        RegionNode theSingleNode = theCFG.startNode();
-        assertEquals(3, theSingleNode.getExpressions().size());
+        final Program theProgram = newProgramFrom(theBytecodeProgram, new BytecodeMethodSignature(BytecodePrimitiveTypeRef.INT, new BytecodeTypeRef[] {BytecodePrimitiveTypeRef.INT, BytecodePrimitiveTypeRef.INT}));
+        assertEquals(3, theProgram.getVariables().size());
+        final ControlFlowGraph theCFG = theProgram.getControlFlowGraph();
+        assertEquals(1, theCFG.dominators().getPreOrder().size());
+        final RegionNode theSingleNode = theCFG.startNode();
+        assertEquals(4, theSingleNode.getExpressions().size());
     }
 
     @Test
     public void testPHIStack() {
-        BytecodeProgram theBytecodeProgram = new BytecodeProgram();
+        final BytecodeProgram theBytecodeProgram = new BytecodeProgram();
         theBytecodeProgram.addInstruction(new BytecodeInstructionICONST(BytecodeOpcodeAddress.START_AT_ZERO, 11));
         theBytecodeProgram.addInstruction(new BytecodeInstructionICONST(new BytecodeOpcodeAddress(1), 22));
         theBytecodeProgram.addInstruction(new BytecodeInstructionACONSTNULL(new BytecodeOpcodeAddress(2)));
@@ -92,13 +103,13 @@ public class NaiveProgramGeneratorTest {
         theBytecodeProgram.addInstruction(new BytecodeInstructionGenericADD(new BytecodeOpcodeAddress(101), BytecodePrimitiveTypeRef.INT));
         theBytecodeProgram.addInstruction(new BytecodeInstructionGenericRETURN(new BytecodeOpcodeAddress(102), BytecodePrimitiveTypeRef.INT));
 
-        Program theProgram = newProgramFrom(theBytecodeProgram, new BytecodeMethodSignature(BytecodePrimitiveTypeRef.INT, new BytecodeTypeRef[] {BytecodePrimitiveTypeRef.INT, BytecodePrimitiveTypeRef.INT}));
-        assertEquals(7, theProgram.getVariables().size());
-        ControlFlowGraph theCFG = theProgram.getControlFlowGraph();
-        assertEquals(4, theCFG.getKnownNodes().size());
-        RegionNode theSingleNode = theCFG.startNode();
+        final Program theProgram = newProgramFrom(theBytecodeProgram, new BytecodeMethodSignature(BytecodePrimitiveTypeRef.INT, new BytecodeTypeRef[] {BytecodePrimitiveTypeRef.INT, BytecodePrimitiveTypeRef.INT}));
+
+        assertEquals(14, theProgram.getVariables().size());
+        final ControlFlowGraph theCFG = theProgram.getControlFlowGraph();
+        assertEquals(4, theCFG.dominators().getPreOrder().size());
+        final RegionNode theSingleNode = theCFG.startNode();
         assertEquals(8, theSingleNode.getExpressions().size());
         System.out.println(theCFG.toDOT());
     }
-
 }

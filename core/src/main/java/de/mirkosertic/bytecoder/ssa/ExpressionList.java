@@ -15,8 +15,6 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
-import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -28,7 +26,7 @@ public class ExpressionList {
         expressions = new ArrayList<>();
     }
 
-    public void add(Expression aExpression) {
+    public void add(final Expression aExpression) {
         expressions.add(aExpression);
     }
 
@@ -44,39 +42,39 @@ public class ExpressionList {
         if (expressions.isEmpty()) {
             return null;
         }
-        int theLastIndex = expressions.size() - 1;
+        final int theLastIndex = expressions.size() - 1;
         return expressions.get(theLastIndex);
     }
 
-    public void addBefore(Expression aNewExpression, Expression aTarget) {
+    public void addBefore(final Expression aNewExpression, final Expression aTarget) {
         expressions.add(expressions.indexOf(aTarget), aNewExpression);
     }
 
-    public void replace(Expression aExpressionToReplace, Expression aNewExpression) {
-        int p = expressions.indexOf(aExpressionToReplace);
+    public void replace(final Expression aExpressionToReplace, final Expression aNewExpression) {
+        final int p = expressions.indexOf(aExpressionToReplace);
         if (p>=0) {
             expressions.remove(p);
             expressions.add(p, aNewExpression);
         }
     }
 
-    public void replace(Expression aExpressionToReplace, ExpressionList aList) {
-        int p = expressions.indexOf(aExpressionToReplace);
+    public void replace(final Expression aExpressionToReplace, final ExpressionList aList) {
+        final int p = expressions.indexOf(aExpressionToReplace);
         if (p>=0) {
             expressions.remove(p);
-            List<Expression> theList = aList.toList();
+            final List<Expression> theList = aList.toList();
             for (int i = theList.size() - 1; i >= 0; i--) {
                 expressions.add(p, theList.get(i));
             }
         }
     }
 
-    public void remove(Expression aExpression) {
+    public void remove(final Expression aExpression) {
         expressions.remove(aExpression);
     }
 
-    public Expression predecessorOf(Expression aExpression) {
-        int p = expressions.indexOf(aExpression);
+    public Expression predecessorOf(final Expression aExpression) {
+        final int p = expressions.indexOf(aExpression);
         if (p>0) {
             return expressions.get(p-1);
         }
@@ -84,7 +82,7 @@ public class ExpressionList {
     }
 
     public boolean endWithNeverReturningExpression() {
-        Expression theLastExpression = lastExpression();
+        final Expression theLastExpression = lastExpression();
         return theLastExpression instanceof ReturnExpression ||
                 theLastExpression instanceof ReturnValueExpression ||
                 theLastExpression instanceof TableSwitchExpression ||
@@ -94,25 +92,21 @@ public class ExpressionList {
     }
 
     public boolean endsWithReturn() {
-        Expression theLastExpression = lastExpression();
+        final Expression theLastExpression = lastExpression();
         return theLastExpression instanceof ReturnExpression ||
                 theLastExpression instanceof ReturnValueExpression;
     }
 
-    public List<BytecodeOpcodeAddress> jumpTargets() {
-        List<BytecodeOpcodeAddress> theTargets = new ArrayList<>();
-        for (Expression theExpression : expressions) {
-            if (theExpression instanceof GotoExpression) {
-                GotoExpression theGoto = (GotoExpression) theExpression;
-                theTargets.add(theGoto.getJumpTarget());
-            }
+    public ExpressionList deepCopy() {
+        final ExpressionList theList = new ExpressionList();
+        for (final Expression theExpression : expressions) {
             if (theExpression instanceof ExpressionListContainer) {
-                ExpressionListContainer theContainer = (ExpressionListContainer) theExpression;
-                for (ExpressionList theList : theContainer.getExpressionLists()) {
-                    theTargets.addAll(theList.jumpTargets());
-                }
+                final ExpressionListContainer theContainer = (ExpressionListContainer) theExpression;
+                theList.add(theContainer.deepCopy());
+            } else {
+                theList.add(theExpression);
             }
         }
-        return theTargets;
+        return theList;
     }
 }

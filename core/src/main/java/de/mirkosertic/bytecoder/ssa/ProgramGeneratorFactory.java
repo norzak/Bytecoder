@@ -16,8 +16,9 @@
 package de.mirkosertic.bytecoder.ssa;
 
 import de.mirkosertic.bytecoder.core.BytecodeLinkerContext;
+import de.mirkosertic.bytecoder.intrinsics.Intrinsics;
 
 public interface ProgramGeneratorFactory {
 
-    ProgramGenerator createFor(BytecodeLinkerContext aLinkerContext);
+    ProgramGenerator createFor(BytecodeLinkerContext aLinkerContext, Intrinsics aIntrinsics);
 }

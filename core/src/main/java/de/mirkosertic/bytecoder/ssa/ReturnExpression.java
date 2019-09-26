@@ -15,5 +15,11 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+
 public class ReturnExpression extends Expression {
+
+    public ReturnExpression(final Program aProgram, final BytecodeOpcodeAddress address) {
+        super(aProgram, address);
+    }
 }

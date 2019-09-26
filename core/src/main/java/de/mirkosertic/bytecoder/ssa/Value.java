@@ -15,74 +15,94 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
-import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import de.mirkosertic.bytecoder.graph.Edge;
+import de.mirkosertic.bytecoder.core.BytecodeLinkerContext;
+import de.mirkosertic.bytecoder.graph.EdgeType;
 import de.mirkosertic.bytecoder.graph.Node;
 
-public abstract class Value extends Node {
+public abstract class Value extends Node<Node, EdgeType> {
+
+    private List<? extends Value> cachedIncomingFlows;
 
     protected Value() {
     }
 
-    protected void receivesDataFrom(Value aOtherValue) {
-        aOtherValue.addEdgeTo(new DataFlowEdgeType(), this);
+    private void resetCaches() {
+        cachedIncomingFlows = null;
     }
 
-    protected void receivesDataFrom(List<Value> aValues) {
-        for (Value aValue : aValues) {
+    protected void receivesDataFrom(final Value aOtherValue) {
+        aOtherValue.addEdgeTo(DataFlowEdgeType.instance, this);
+        resetCaches();
+    }
+
+    protected void receivesDataFrom(final List<Value> aValues) {
+        for (final Value aValue : aValues) {
             receivesDataFrom(aValue);
         }
     }
 
-    protected void receivesDataFrom(Value... aValues) {
-        for (Value aValue : aValues) {
+    protected void receivesDataFrom(final Value... aValues) {
+        for (final Value aValue : aValues) {
             receivesDataFrom(aValue);
         }
     }
 
     public <T extends Value> List<T> incomingDataFlows() {
-        return incomingEdges(DataFlowEdgeType.filter()).map(t -> (T) t.sourceNode()).collect(Collectors.toList());
-    }
-
-    public List<Edge> incomingDataFlowEdges() {
-        return incomingEdges(DataFlowEdgeType.filter()).collect(Collectors.toList());
-    }
-
-    public List<Edge> incomingDataFlowEdgesRecursive() {
-        return incomingDataFlowEdgesRecursive(new HashSet<>());
-    }
-
-    private List<Edge> incomingDataFlowEdgesRecursive(Set<Value> aAlreadyVisited) {
-        List<Edge> theResult = new ArrayList<>();
-        if (aAlreadyVisited.add(this)) {
-            for (Edge theEdge : incomingDataFlowEdges()) {
-                theResult.add(theEdge);
-                Value theSource = (Value) theEdge.sourceNode();
-                theResult.addAll(theSource.incomingDataFlowEdgesRecursive(aAlreadyVisited));
-            }
+        if (cachedIncomingFlows == null) {
+            cachedIncomingFlows = incomingEdges(DataFlowEdgeType.filter()).map(t -> (T) t.sourceNode()).collect(Collectors.toList());
         }
-        return theResult;
+        return (List<T>) cachedIncomingFlows;
     }
 
-    public void replaceIncomingDataEdge(Value aOldValue, Value aNewValue) {
+    public void replaceIncomingDataEdge(final Value aOldValue, final Value aNewValue) {
         incomingEdges(DataFlowEdgeType.filter()).forEach(aEdge -> {
             if (aEdge.sourceNode() == aOldValue) {
                 aEdge.newSourceIs(aNewValue);
             }
         });
+        resetCaches();
     }
 
-    public void routeIncomingDataFlowsTo(Value aNewExpression) {
+    public void routeIncomingDataFlowsTo(final Value aNewExpression) {
         incomingEdges(DataFlowEdgeType.filter()).forEach(aEdge -> {
             aEdge.newTargetId(aNewExpression);
             aNewExpression.addIncomingEdge(aEdge);
         });
+        resetCaches();
     }
 
     public abstract TypeRef resolveType();
+
+    public static TypeRef widestTypeOf(final Collection<Value> aValue, final BytecodeLinkerContext aLinkerContext) {
+        if (aValue.size() == 1) {
+            return aValue.iterator().next().resolveType();
+        }
+        final Set<TypeRef> theTypes = new HashSet<>();
+        for (final Value v : aValue) {
+            final TypeRef theType = v.resolveType();
+            if (!(theType == TypeRef.Native.REFERENCE)) {
+                theTypes.add(v.resolveType());
+            }
+        }
+        if (theTypes.size() == 1) {
+            return theTypes.iterator().next();
+        }
+        
+        TypeRef.Native theCurrent = null;
+        for (final Value theValue : aValue) {
+            final TypeRef.Native theValueType = theValue.resolveType().resolve();
+            if (theCurrent == null) {
+                theCurrent = theValueType;
+            } else {
+                theCurrent = theCurrent.eventuallyPromoteTo(theValueType);
+            }
+        }
+        return theCurrent;
+    }
 }

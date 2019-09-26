@@ -15,26 +15,26 @@
  */
 package de.mirkosertic.bytecoder.core;
 
-import de.mirkosertic.bytecoder.classlib.java.lang.TArray;
+import de.mirkosertic.bytecoder.classlib.Array;
 
 public class BytecodeInstructionANEWARRAY extends BytecodeInstruction {
 
     private final int typeIndex;
     private final BytecodeConstantPool constantPool;
 
-    public BytecodeInstructionANEWARRAY(BytecodeOpcodeAddress aIndex, int aTypeIndex, BytecodeConstantPool aConstantPool) {
+    public BytecodeInstructionANEWARRAY(final BytecodeOpcodeAddress aIndex, final int aTypeIndex, final BytecodeConstantPool aConstantPool) {
         super(aIndex);
         typeIndex = aTypeIndex;
         constantPool = aConstantPool;
     }
 
     public BytecodeObjectTypeRef getObjectType() {
-        return BytecodeObjectTypeRef.fromRuntimeClass(TArray.class);
+        return BytecodeObjectTypeRef.fromRuntimeClass(Array.class);
     }
 
-    public BytecodeTypeRef getArrayType(BytecodeSignatureParser aSignatureParser) {
-        BytecodeClassinfoConstant theClassInfo = getTypeConstant();
-        String theType = theClassInfo.getConstant().stringValue();
+    public BytecodeTypeRef getArrayType(final BytecodeSignatureParser aSignatureParser) {
+        final BytecodeClassinfoConstant theClassInfo = getTypeConstant();
+        final String theType = theClassInfo.getConstant().stringValue();
         if (theType.startsWith("[")) {
             return aSignatureParser.toFieldType(theClassInfo.getConstant());
         }
@@ -46,8 +46,8 @@ public class BytecodeInstructionANEWARRAY extends BytecodeInstruction {
     }
 
     @Override
-    public void performLinking(BytecodeClass aOwningClass, BytecodeLinkerContext aLinkerContext) {
+    public void performLinking(final BytecodeClass aOwningClass, final BytecodeLinkerContext aLinkerContext) {
         aLinkerContext.resolveClass(getObjectType());
-        aLinkerContext.linkTypeRef(getArrayType(aLinkerContext.getSignatureParser()));
+        aLinkerContext.resolveTypeRef(getArrayType(aLinkerContext.getSignatureParser()));
     }
 }

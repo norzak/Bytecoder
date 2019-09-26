@@ -15,9 +15,12 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+
 public class TypeOfExpression extends Expression {
 
-    public TypeOfExpression(Value aTarget) {
+    public TypeOfExpression(final Program aProgram, final BytecodeOpcodeAddress aAddress, final Value aTarget) {
+        super(aProgram, aAddress);
         receivesDataFrom(aTarget);
    }
 

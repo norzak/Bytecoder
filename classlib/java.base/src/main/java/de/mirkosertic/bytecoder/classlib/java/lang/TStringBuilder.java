@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Mirko Sertic
+ * Copyright 2018 Mirko Sertic
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,89 +15,103 @@
  */
 package de.mirkosertic.bytecoder.classlib.java.lang;
 
-import de.mirkosertic.bytecoder.api.NoExceptionCheck;
-import de.mirkosertic.bytecoder.classlib.java.io.TSerializable;
-import de.mirkosertic.bytecoder.classlib.java.text.TDecimalFormatSymbols;
+import de.mirkosertic.bytecoder.api.SubstitutesInClass;
 
-public class TStringBuilder extends TAbstractStringBuilder implements TSerializable {
+import java.text.DecimalFormatSymbols;
 
-    private static final TDecimalFormatSymbols FORMAT_SYMBOLS = new TDecimalFormatSymbols();
+@SubstitutesInClass(completeReplace = true)
+public class TStringBuilder {
 
-    private byte[] byteData;
+    private static final DecimalFormatSymbols FORMAT_SYMBOLS = new DecimalFormatSymbols();
 
-    @NoExceptionCheck
+    private static char[] toCharArray(final CharSequence seq) {
+        final int len = seq.length();
+        final char[] charData = new char[len];
+        for (int i=0;i<len;i++) {
+            charData[i] = seq.charAt(i);
+        }
+        return charData;
+    }
+
+    private char[] charData;
+
     public TStringBuilder() {
-        byteData = new byte[0];
+        charData = new char[0];
     }
 
-    @NoExceptionCheck
-    public TStringBuilder(byte[] aData) {
-        byteData = aData;
+    public TStringBuilder(final int capacity) {
+        charData = new char[0];
     }
 
-    @Override
-    @NoExceptionCheck
+    public TStringBuilder(final String aOtherString) {
+        charData = toCharArray(aOtherString);
+    }
+
     public int length() {
-        return byteData.length;
+        return charData.length;
     }
 
-    @Override
-    public char charAt(int aIndex) {
-        return (char) byteData[aIndex];
+    public char charAt(final int aIndex) {
+        return charData[aIndex];
     }
 
-    public void internalAdd(byte[] aOtherData) {
-        byte[] theNewData = new byte[byteData.length + aOtherData.length];
+    public void internalAdd(final char[] aOtherData) {
+        final char[] theNewData = new char[charData.length + aOtherData.length];
         int offset = 0;
-        for (int i = 0; i< byteData.length; i++) {
-            theNewData[offset++] = byteData[i];
+        for (int i = 0; i< charData.length; i++) {
+            theNewData[offset++] = charData[i];
         }
         for (int i=0;i<aOtherData.length;i++) {
             theNewData[offset++] = aOtherData[i];
         }
-        byteData = theNewData;
+        charData = theNewData;
     }
 
     public TStringBuilder reverse() {
-        byte[] theReversed = new byte[byteData.length];
-        for (int i=0;i<byteData.length;i++) {
-            theReversed[byteData.length -1 -i] = byteData[i];
+        final char[] theReversed = new char[charData.length];
+        for (int i=0;i<charData.length;i++) {
+            theReversed[charData.length -1 -i] = charData[i];
         }
-        byteData = theReversed;
+        charData = theReversed;
         return this;
     }
 
-    @Override
-    public TStringBuilder append(TCharSequence aCharSequence) {
-        byte[] theOtherData = aCharSequence.getBytes();
-        internalAdd(theOtherData);
+    public TStringBuilder append(final CharSequence aCharSequence) {
+        if (aCharSequence == null) {
+            internalAdd(toCharArray("null"));
+            return this;
+        }
+        internalAdd(toCharArray(aCharSequence));
         return this;
     }
 
-    public TStringBuilder append(TString aString) {
-        byte[] theOtherData = aString.getBytes();
-        internalAdd(theOtherData);
+    public TStringBuilder append(final String aString) {
+        if (aString == null) {
+            internalAdd(toCharArray("null"));
+            return this;
+        }
+        internalAdd(toCharArray(aString));
         return this;
     }
 
-    public TStringBuilder append(char aValue) {
-        internalAdd(new byte[] {(byte) aValue});
+    public TStringBuilder append(final char aValue) {
+        internalAdd(new char[] {aValue});
         return this;
     }
 
-    public TStringBuilder append(float aValue) {
+    public TStringBuilder append(final float aValue) {
         appendInternal(aValue, 1000000000);
         return this;
     }
 
-    public TStringBuilder append(double aValue) {
+    public TStringBuilder append(final double aValue) {
         appendInternal(aValue, 1000000000);
         return this;
     }
 
-    public void appendInternal(double aValue, long aMultiplier) {
-        long theA;
-        long theB;
+    public void appendInternal(final double aValue, final long aMultiplier) {
+        final long theA;
+        final long theB;
         if (aValue < 0) {
             theA = (long) Math.ceil(aValue);
             theB = - (long) Math.ceil((aValue % 1) * 10000);
@@ -107,11 +121,11 @@ public class TStringBuilder extends TAbstractStringBuilder implements TSerializa
         }
         append(theA);
 
-        StringBuilder theTemp = new StringBuilder();
+        final StringBuilder theTemp = new StringBuilder();
         theTemp.append(theB);
 
         for (int i=theTemp.length()-1;i>=0;i--) {
-            char theChar = theTemp.charAt(i);
+            final char theChar = theTemp.charAt(i);
             if (theChar != '0') {
                 append(FORMAT_SYMBOLS.getDecimalSeparator());
                 for (int j=0;j<=i;j++) {
@@ -131,43 +145,43 @@ public class TStringBuilder extends TAbstractStringBuilder implements TSerializa
             isNegative = true;
             aValue=-aValue;
         }
-        byte[] theBytes = new byte[20];
+        final char[] theCharacters = new char[20];
         int theOffset = 0;
         do {
-            int theRemainder = (int) aValue % 10;
-            theBytes[theOffset++] = (byte) theRemainder;
+            final int theRemainder = (int) aValue % 10;
+            theCharacters[theOffset++] = Character.forDigit(theRemainder, 10);
             aValue = aValue / 10;
         } while (aValue > 0);
 
-        byte[] theNewData;
-        int theStart;
+        final char[] theNewData;
+        final int theStart;
         if (isNegative) {
-            theNewData = new byte[theOffset + 1];
+            theNewData = new char[theOffset + 1];
             theNewData[0] = '-';
             theStart = 1;
         } else {
-            theNewData = new byte[theOffset];
+            theNewData = new char[theOffset];
             theStart = 0;
         }
         for (int i=0;i<theOffset;i++) {
-            theNewData[theStart + i] = (byte) (48 + theBytes[theOffset - 1 - i]);
+            theNewData[theStart + i] = theCharacters[theOffset - 1 - i];
         }
 
         internalAdd(theNewData);
         return this;
     }
 
-    public TStringBuilder append(int aValue) {
+    public TStringBuilder append(final int aValue) {
         return append((long) aValue);
     }
 
-    public TStringBuilder append(Object aObject) {
+    public TStringBuilder append(final Object aObject) {
         if (aObject == null) {
-            internalAdd("null".getBytes());
+            internalAdd(toCharArray("null"));
             return this;
         }
         if (aObject instanceof String) {
-            internalAdd(((String) aObject).getBytes());
+            internalAdd(toCharArray((String) aObject));
             return this;
         }
         if (aObject instanceof Long) {
@@ -187,20 +201,15 @@ public class TStringBuilder extends TAbstractStringBuilder implements TSerializa
             return this;
         }
 
-        byte[] theOtherData = aObject.toString().getBytes();
-        internalAdd(theOtherData);
+        internalAdd(toCharArray(aObject.toString()));
         return this;
     }
 
-    @Override
-    @NoExceptionCheck
     public byte[] getBytes() {
-        return byteData;
+        return toString().getBytes();
     }
 
-    @Override
-    @NoExceptionCheck
     public String toString() {
-        return new String(byteData);
+        return new String(charData);
     }
 }

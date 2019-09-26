@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Mirko Sertic
+ * Copyright 2018 Mirko Sertic
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,10 @@
  */
 package de.mirkosertic.bytecoder.classlib.java.lang;
 
-public class TMath extends TObject {
+import de.mirkosertic.bytecoder.api.SubstitutesInClass;
+
+@SubstitutesInClass(completeReplace = true)
+public class TMath {
 
     public static final double E = 2.7182818284590452354;
     public static final double PI = 3.14159265358979323846;
@@ -28,14 +31,21 @@ public class TMath extends TObject {
                 0x1p-63f };
     }
 
-    public static float abs(float a) {
+    public static float abs(final float a) {
         if (a<0) {
             return -a;
         }
         return a;
     }
 
-    public static double abs(double a) {
+    public static double abs(final double a) {
+        if (a<0) {
+            return -a;
+        }
+        return a;
+    }
+
+    public static int abs(final int a) {
         if (a<0) {
             return -a;
         }
@@ -45,8 +55,6 @@ public class TMath extends TObject {
     public static native double sqrt(double aValue);
 
     public static native double ceil(double aValue);
-
-    public static native float getNaN();
 
     public static native double floor(double aValue);
 
@@ -66,14 +74,20 @@ public class TMath extends TObject {
 
     public static native int max(int aValue1, int aValue2);
 
+    public static native double max(double aValue1, double aValue2);
+
     public static native int min(int aValue1, int aValue2);
+
+    public static native float min(float aValue1, float aValue2);
+
+    public static native double min(double aValue1, double aValue2);
 
     public static int getExponent(float f) {
         f = abs(f);
         int exp = 0;
-        float[] exponents = FloatExponents.exponents;
-        float[] negativeExponents = FloatExponents.negativeExponents;
-        float[] negativeExponents2 = FloatExponents.negativeExponents2;
+        final float[] exponents = FloatExponents.exponents;
+        final float[] negativeExponents = FloatExponents.negativeExponents;
+        final float[] negativeExponents2 = FloatExponents.negativeExponents2;
         if (f > 1) {
             int expBit = 1 << (exponents.length - 1);
             for (int i = exponents.length - 1; i >= 0; --i) {
@@ -100,5 +114,60 @@ public class TMath extends TObject {
             exp = -(exp + offset);
         }
         return exp;
+    }
+
+    public static native double log(double aValue1);
+
+    public static int floorMod(final int x, final int y) {
+        return x - floorDiv(x, y) * y;
+    }
+
+    public static int floorDiv(final int x, final int y) {
+        int r = x / y;
+        // if the signs are different and modulo not zero, round down
+        if ((x ^ y) < 0 && (r * y != x)) {
+            r--;
+        }
+        return r;
+    }
+
+    public static long floorDiv(final long x, final long y) {
+        long r = x / y;
+        // if the signs are different and modulo not zero, round down
+        if ((x ^ y) < 0 && (r * y != x)) {
+            r--;
+        }
+        return r;
+    }
+
+    public static long floorDiv(final long x, final int y) {
+        return floorDiv(x, (long)y);
+    }
+
+    public static int floorMod(final long x, final int y) {
+        // Result cannot overflow the range of int.
+        return (int)(x - floorDiv(x, y) * y);
+    }
+
+    public static long floorMod(final long x, final long y) {
+        return x - floorDiv(x, y) * y;
+    }
+
+    public static int addExact(int x, int y) {
+        int r = x + y;
+        // HD 2-12 Overflow iff both arguments have the opposite sign of the result
+        if (((x ^ r) & (y ^ r)) < 0) {
+            throw new ArithmeticException("integer overflow");
+        }
+        return r;
+    }
+
+    public static long addExact(long x, long y) {
+        long r = x + y;
+        // HD 2-12 Overflow iff both arguments have the opposite sign of the result
+        if (((x ^ r) & (y ^ r)) < 0) {
+            throw new ArithmeticException("long overflow");
+        }
+        return r;
     }
 }

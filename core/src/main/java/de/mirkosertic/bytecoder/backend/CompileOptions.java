@@ -15,6 +15,7 @@
  */
 package de.mirkosertic.bytecoder.backend;
 
+import de.mirkosertic.bytecoder.allocator.Allocator;
 import de.mirkosertic.bytecoder.api.Logger;
 import de.mirkosertic.bytecoder.optimizer.Optimizer;
 
@@ -23,11 +24,29 @@ public class CompileOptions {
     private final Logger logger;
     private final boolean debugOutput;
     private final Optimizer optimizer;
+    private final boolean enableExceptions;
+    private final String filenamePrefix;
+    private final int wasmMinimumPageSize;
+    private final int wasmMaximumPageSize;
+    private final boolean minify;
+    private final boolean preferStackifier;
+    private final Allocator allocator;
 
-    public CompileOptions(Logger aLogger, boolean aDebugOutput, Optimizer aOptimizer) {
+    public CompileOptions(final Logger aLogger, final boolean aDebugOutput, final Optimizer aOptimizer, final boolean aEnableExceptions,
+                          final String aFilenamePrefix, final int aWasmMinimumPageSize, final int aWasmMaximumPageSize,
+                          final boolean aMinify,
+                          final boolean aPreferStackifier,
+                          final Allocator aAllocator) {
         logger = aLogger;
         debugOutput = aDebugOutput;
         optimizer = aOptimizer;
+        enableExceptions = aEnableExceptions;
+        filenamePrefix = aFilenamePrefix;
+        wasmMinimumPageSize = aWasmMinimumPageSize;
+        wasmMaximumPageSize = aWasmMaximumPageSize;
+        minify = aMinify;
+        preferStackifier = aPreferStackifier;
+        allocator = aAllocator;
     }
 
     public Logger getLogger() {
@@ -35,10 +54,38 @@ public class CompileOptions {
     }
 
     public boolean isDebugOutput() {
-        return debugOutput;
+        return debugOutput && (!minify);
     }
 
     public Optimizer getOptimizer() {
         return optimizer;
+    }
+
+    public boolean isEnableExceptions() {
+        return enableExceptions;
+    }
+
+    public String getFilenamePrefix() {
+        return filenamePrefix;
+    }
+
+    public int getWasmMinimumPageSize() {
+        return wasmMinimumPageSize;
+    }
+
+    public int getWasmMaximumPageSize() {
+        return wasmMaximumPageSize;
+    }
+
+    public boolean isMinify() {
+        return minify;
+    }
+
+    public boolean isPreferStackifier() {
+        return preferStackifier;
+    }
+
+    public Allocator getAllocator() {
+        return allocator;
     }
 }

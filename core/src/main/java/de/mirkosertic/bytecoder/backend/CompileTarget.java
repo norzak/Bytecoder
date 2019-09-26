@@ -15,26 +15,26 @@
  */
 package de.mirkosertic.bytecoder.backend;
 
-import java.lang.reflect.Method;
-
 import de.mirkosertic.bytecoder.backend.js.JSSSACompilerBackend;
-import de.mirkosertic.bytecoder.backend.js.JSWriterUtils;
-import de.mirkosertic.bytecoder.backend.wasm.WASMSSACompilerBackend;
-import de.mirkosertic.bytecoder.classlib.java.lang.TClass;
-import de.mirkosertic.bytecoder.classlib.java.lang.TObject;
-import de.mirkosertic.bytecoder.classlib.java.lang.invoke.TCallSite;
-import de.mirkosertic.bytecoder.classlib.java.lang.invoke.TMethodHandle;
+import de.mirkosertic.bytecoder.backend.wasm.WASMSSAASTCompilerBackend;
+import de.mirkosertic.bytecoder.classlib.VM;
 import de.mirkosertic.bytecoder.core.BytecodeArrayTypeRef;
+import de.mirkosertic.bytecoder.core.BytecodeClass;
 import de.mirkosertic.bytecoder.core.BytecodeLinkedClass;
 import de.mirkosertic.bytecoder.core.BytecodeLinkerContext;
 import de.mirkosertic.bytecoder.core.BytecodeLoader;
 import de.mirkosertic.bytecoder.core.BytecodeMethod;
 import de.mirkosertic.bytecoder.core.BytecodeMethodSignature;
 import de.mirkosertic.bytecoder.core.BytecodeObjectTypeRef;
-import de.mirkosertic.bytecoder.core.BytecodePackageReplacer;
 import de.mirkosertic.bytecoder.core.BytecodePrimitiveTypeRef;
 import de.mirkosertic.bytecoder.core.BytecodeTypeRef;
 import de.mirkosertic.bytecoder.ssa.NaiveProgramGenerator;
+
+import java.lang.reflect.Method;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class CompileTarget {
 
@@ -48,7 +48,7 @@ public class CompileTarget {
         wasm {
             @Override
             public CompileBackend createBackend() {
-                return new WASMSSACompilerBackend(NaiveProgramGenerator.FACTORY);
+                return new WASMSSAASTCompilerBackend(NaiveProgramGenerator.FACTORY);
             }
         };
 
@@ -58,35 +58,31 @@ public class CompileTarget {
     private final CompileBackend backend;
     private final BytecodeLoader bytecodeLoader;
 
-    public CompileTarget(ClassLoader aClassLoader, BackendType aType) {
+    public CompileTarget(final ClassLoader aClassLoader, final BackendType aType) {
         backend = aType.createBackend();
-        bytecodeLoader = new BytecodeLoader(aClassLoader, new BytecodePackageReplacer());
+        bytecodeLoader = new BytecodeLoader(aClassLoader);
     }
 
-    public String generatedFileName() {
-        return backend.generatedFileName();
-    }
+    public CompileResult compile(
+            final CompileOptions aOptions, final Class aClass, final String aMethodName, final BytecodeMethodSignature aSignature) {
+        final BytecodeLinkerContext theLinkerContext = new BytecodeLinkerContext(bytecodeLoader, aOptions.getLogger());
 
-    public CompileResult compileToJS(CompileOptions aOptions, Class aClass, String aMethodName, BytecodeMethodSignature aSignature) {
-        BytecodeLinkerContext theLinkerContext = new BytecodeLinkerContext(bytecodeLoader, aOptions.getLogger());
-
-        BytecodeLinkedClass theClassLinkedCass = theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(TClass.class));
+        final BytecodeLinkedClass theClassLinkedCass = theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(Class.class));
         theClassLinkedCass.resolveConstructorInvocation(new BytecodeMethodSignature(
                 BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[] {}));
 
         // Lambda handling
-        BytecodeLinkedClass theCallsite = theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(TCallSite.class));
-        theCallsite.resolveVirtualMethod("getTarget", new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(
-                TMethodHandle.class), new BytecodeTypeRef[0]));
+        final BytecodeLinkedClass theCallsite = theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(VM.ImplementingCallsite.class));
+        theCallsite.resolveVirtualMethod("invokeExact", new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(Object.class),
+                new BytecodeTypeRef[] {new BytecodeArrayTypeRef(BytecodeObjectTypeRef.fromRuntimeClass(Object.class), 1)}));
 
-        BytecodeLinkedClass theMethodHandle = theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(TMethodHandle.class));
-        theMethodHandle.resolveVirtualMethod("invokeExact", new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(TObject.class),
-                new BytecodeTypeRef[] {new BytecodeArrayTypeRef(BytecodeObjectTypeRef.fromRuntimeClass(TObject.class), 1)}));
+        final BytecodeObjectTypeRef theTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(aClass);
 
-        BytecodeObjectTypeRef theTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(aClass);
-
-        BytecodeLinkedClass theClass = theLinkerContext.resolveClass(theTypeRef);
-        BytecodeMethod theMethod = theClass.getBytecodeClass().methodByNameAndSignatureOrNull(aMethodName, aSignature);
+        final BytecodeLinkedClass theClass = theLinkerContext.resolveClass(theTypeRef);
+        final BytecodeMethod theMethod = theClass.getBytecodeClass().methodByNameAndSignatureOrNull(aMethodName, aSignature);
+        if (theMethod == null) {
+            throw new IllegalStateException("No method named " + aMethodName + " with signature " + aSignature + "found in " + theClass.getClassName().name());
+        }
         if (theMethod.getAccessFlags().isStatic()) {
             theClass.resolveStaticMethod(aMethodName, aSignature);
         } else {
@@ -97,18 +93,44 @@ public class CompileTarget {
         aOptions.getLogger().info("Resolving abstract method hierarchy");
         theLinkerContext.resolveAbstractMethodsInSubclasses();
 
+        // Ugly hack for deeply nested promises and anonymous inner classes
+        boolean somethingAdded = true;
+        final Set<BytecodeLinkedClass> theAlreadySeen = new HashSet<>();
+        while (somethingAdded) {
+            somethingAdded = false;
+            // We have to link all callback implementations. They are not part of the dependency yet as
+            // they are not invoked by the bytecode, but from the outside world. By adding them to the
+            // dependency tree, we make sure they are available for invocation.
+            final List<BytecodeLinkedClass> theLinkedClasses = theLinkerContext.linkedClasses().map(t -> t.targetNode())
+                    .collect(Collectors.toList());
+            for (final BytecodeLinkedClass theLinkedClass : theLinkedClasses) {
+                if (theLinkedClass.isCallback()) {
+                    if (theAlreadySeen.add(theLinkedClass)) {
+                        somethingAdded = true;
+                        final BytecodeClass theBytecodeClass = theLinkedClass.getBytecodeClass();
+                        aOptions.getLogger()
+                                .info("Resolving callback {}", theBytecodeClass.getThisInfo().getConstant().stringValue());
+                        for (final BytecodeMethod theCallbackMethod : theBytecodeClass.getMethods()) {
+                            if (!theCallbackMethod.isConstructor() && !theCallbackMethod.isClassInitializer()) {
+                                aOptions.getLogger()
+                                        .info("Resolving callback method {} {}", theCallbackMethod.getName().stringValue(),
+                                                theCallbackMethod.getSignature().toString());
+                                theLinkedClass.resolveVirtualMethod(theCallbackMethod.getName().stringValue(),
+                                        theCallbackMethod.getSignature());
+                            }
+                        }
+                    }
+                }
+            }
+
+            aOptions.getLogger().info("Resolving abstract method hierarchy");
+            theLinkerContext.resolveAbstractMethodsInSubclasses();
+        }
+
         return backend.generateCodeFor(aOptions, theLinkerContext, aClass, aMethodName, aSignature);
     }
 
-    public String toClassName(BytecodeObjectTypeRef aTypeRef) {
-        return JSWriterUtils.toClassName(aTypeRef);
-    }
-
-    public String toMethodName(String aName, BytecodeMethodSignature aSignature) {
-        return JSWriterUtils.toMethodName(aName, aSignature);
-    }
-
-    public BytecodeMethodSignature toMethodSignature(Method aMethod) {
+    public BytecodeMethodSignature toMethodSignature(final Method aMethod) {
         return bytecodeLoader.getSignatureParser().toMethodSignature(aMethod);
     }
 }

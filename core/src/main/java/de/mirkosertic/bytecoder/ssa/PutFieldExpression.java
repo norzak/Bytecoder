@@ -16,12 +16,14 @@
 package de.mirkosertic.bytecoder.ssa;
 
 import de.mirkosertic.bytecoder.core.BytecodeFieldRefConstant;
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
 
 public class PutFieldExpression extends Expression {
 
     private final BytecodeFieldRefConstant field;
 
-    public PutFieldExpression(BytecodeFieldRefConstant aField, Value aTarget, Value aValue) {
+    public PutFieldExpression(final Program aProgram, final BytecodeOpcodeAddress aAddress, final BytecodeFieldRefConstant aField, final Value aTarget, final Value aValue) {
+        super(aProgram, aAddress);
         field = aField;
         receivesDataFrom(aTarget, aValue);
     }

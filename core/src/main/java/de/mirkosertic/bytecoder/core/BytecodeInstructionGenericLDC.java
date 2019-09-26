@@ -15,15 +15,14 @@
  */
 package de.mirkosertic.bytecoder.core;
 
-import de.mirkosertic.bytecoder.classlib.java.lang.TArray;
-import de.mirkosertic.bytecoder.classlib.java.lang.TString;
+import de.mirkosertic.bytecoder.classlib.Array;
 
 public class BytecodeInstructionGenericLDC extends BytecodeInstruction {
 
     private final int constantIndex;
     private final BytecodeConstantPool constantPool;
 
-    public BytecodeInstructionGenericLDC(BytecodeOpcodeAddress aOpcodeIndex, int aConstantIndex, BytecodeConstantPool aConstantPool) {
+    public BytecodeInstructionGenericLDC(final BytecodeOpcodeAddress aOpcodeIndex, final int aConstantIndex, final BytecodeConstantPool aConstantPool) {
         super(aOpcodeIndex);
         constantIndex = aConstantIndex;
         constantPool = aConstantPool;
@@ -34,22 +33,31 @@ public class BytecodeInstructionGenericLDC extends BytecodeInstruction {
     }
 
     @Override
-    public void performLinking(BytecodeClass aOwningClass, BytecodeLinkerContext aLinkerContext) {
-        BytecodeConstant theConstant = constant();
+    public void performLinking(final BytecodeClass aOwningClass, final BytecodeLinkerContext aLinkerContext) {
+        final BytecodeConstant theConstant = constant();
         if (theConstant instanceof BytecodeStringConstant) {
-            aLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(TArray.class));
+            aLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(Array.class));
 
-            BytecodeObjectTypeRef theObjectTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(TString.class);
-            aLinkerContext.resolveClass(theObjectTypeRef).resolveConstructorInvocation(new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID,
+            final BytecodeObjectTypeRef theObjectTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(String.class);
+            aLinkerContext.resolveClass(theObjectTypeRef)
+                    .resolveConstructorInvocation(new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID,
                             new BytecodeTypeRef[] {new BytecodeArrayTypeRef(BytecodePrimitiveTypeRef.BYTE, 1)}));
         }
         if (theConstant instanceof BytecodeClassinfoConstant) {
-            BytecodeClassinfoConstant theClassInfo = (BytecodeClassinfoConstant) theConstant;
+            final BytecodeClassinfoConstant theClassInfo = (BytecodeClassinfoConstant) theConstant;
             if (theClassInfo.getConstant().stringValue().startsWith("[")) {
-                BytecodeTypeRef theType = aLinkerContext.getSignatureParser().toFieldType(theClassInfo.getConstant());
-                aLinkerContext.linkTypeRef(theType);
+                final BytecodeTypeRef theType = aLinkerContext.getSignatureParser().toFieldType(theClassInfo.getConstant());
+                aLinkerContext.resolveTypeRef(theType);
             } else {
                 aLinkerContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(theClassInfo.getConstant()));
+            }
+        }
+        if (theConstant instanceof BytecodeMethodTypeConstant) {
+            final BytecodeMethodTypeConstant m = (BytecodeMethodTypeConstant) theConstant;
+            final BytecodeMethodSignature theSignature = m.getDescriptorIndex().methodSignature();
+            aLinkerContext.resolveTypeRef(theSignature.getReturnType());
+            for (final BytecodeTypeRef ref : theSignature.getArguments()) {
+                aLinkerContext.resolveTypeRef(ref);
             }
         }
     }

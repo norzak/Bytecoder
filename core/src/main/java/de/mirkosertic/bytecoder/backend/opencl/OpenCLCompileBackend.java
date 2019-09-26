@@ -15,28 +15,28 @@
  */
 package de.mirkosertic.bytecoder.backend.opencl;
 
+import de.mirkosertic.bytecoder.allocator.AbstractAllocator;
 import de.mirkosertic.bytecoder.backend.CompileBackend;
 import de.mirkosertic.bytecoder.backend.CompileOptions;
-import de.mirkosertic.bytecoder.core.BytecodeResolvedFields;
 import de.mirkosertic.bytecoder.core.BytecodeLinkedClass;
 import de.mirkosertic.bytecoder.core.BytecodeLinkerContext;
 import de.mirkosertic.bytecoder.core.BytecodeLoader;
 import de.mirkosertic.bytecoder.core.BytecodeMethod;
-import de.mirkosertic.bytecoder.core.BytecodeResolvedMethods;
 import de.mirkosertic.bytecoder.core.BytecodeMethodSignature;
 import de.mirkosertic.bytecoder.core.BytecodeObjectTypeRef;
-import de.mirkosertic.bytecoder.core.BytecodePackageReplacer;
 import de.mirkosertic.bytecoder.core.BytecodePrimitiveTypeRef;
+import de.mirkosertic.bytecoder.core.BytecodeResolvedFields;
+import de.mirkosertic.bytecoder.core.BytecodeResolvedMethods;
 import de.mirkosertic.bytecoder.core.BytecodeTypeRef;
 import de.mirkosertic.bytecoder.relooper.Relooper;
 import de.mirkosertic.bytecoder.ssa.ExpressionList;
-import de.mirkosertic.bytecoder.ssa.GetFieldExpression;
 import de.mirkosertic.bytecoder.ssa.NaiveProgramGenerator;
 import de.mirkosertic.bytecoder.ssa.Program;
 import de.mirkosertic.bytecoder.ssa.ProgramGenerator;
 import de.mirkosertic.bytecoder.ssa.ProgramGeneratorFactory;
 import de.mirkosertic.bytecoder.ssa.RegionNode;
-import de.mirkosertic.bytecoder.ssa.Value;
+import de.mirkosertic.bytecoder.stackifier.HeadToHeadControlFlowException;
+import de.mirkosertic.bytecoder.stackifier.Stackifier;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -48,72 +48,102 @@ public class OpenCLCompileBackend implements CompileBackend<OpenCLCompileResult>
     private final ProgramGeneratorFactory programGeneratorFactory;
 
     public OpenCLCompileBackend() {
-        loader = new BytecodeLoader(getClass().getClassLoader(), new BytecodePackageReplacer());
+        loader = new BytecodeLoader(getClass().getClassLoader());
         programGeneratorFactory = NaiveProgramGenerator.FACTORY;
     }
 
-    public BytecodeMethodSignature signatureFrom(Method aMethod) {
+    public BytecodeMethodSignature signatureFrom(final Method aMethod) {
         return loader.getSignatureParser().toMethodSignature(aMethod);
     }
 
     @Override
-    public OpenCLCompileResult generateCodeFor(CompileOptions aOptions, BytecodeLinkerContext aLinkerContext, Class aEntryPointClass, String aEntryPointMethodName, BytecodeMethodSignature aEntryPointSignatue) {
+    public OpenCLCompileResult generateCodeFor(
+            final CompileOptions aOptions, final BytecodeLinkerContext aLinkerContext, final Class aEntryPointClass, final String aEntryPointMethodName, final BytecodeMethodSignature aEntryPointSignatue) {
 
-        BytecodeLinkerContext theLinkerContext = new BytecodeLinkerContext(loader, aOptions.getLogger());
-        BytecodeLinkedClass theKernelClass = theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(aEntryPointClass));
+        final BytecodeLinkerContext theLinkerContext = new BytecodeLinkerContext(loader, aOptions.getLogger());
+        final BytecodeLinkedClass theKernelClass = theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(aEntryPointClass));
 
         theKernelClass.resolveVirtualMethod(aEntryPointMethodName, aEntryPointSignatue);
 
-        BytecodeResolvedMethods theMethodMap = theKernelClass.resolvedMethods();
+        final BytecodeResolvedMethods theMethodMap = theKernelClass.resolvedMethods();
 
-        StringWriter theStrWriter = new StringWriter();
+        final StringWriter theStrWriter = new StringWriter();
 
-        OpenCLInputOutputs theInputOutputs;
+        final OpenCLInputOutputs theInputOutputs;
 
         // First of all, we link the kernel method
-        BytecodeMethod theKernelMethod = theKernelClass.getBytecodeClass().methodByNameAndSignatureOrNull("processWorkItem", new BytecodeMethodSignature(
+        final BytecodeMethod theKernelMethod = theKernelClass.getBytecodeClass().methodByNameAndSignatureOrNull("processWorkItem", new BytecodeMethodSignature(
                 BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[0]));
 
-        ProgramGenerator theGenerator = programGeneratorFactory.createFor(aLinkerContext);
-        Program theSSAProgram = theGenerator.generateFrom(theKernelClass.getBytecodeClass(), theKernelMethod);
+        final ProgramGenerator theGenerator = programGeneratorFactory.createFor(aLinkerContext, new OpenCLIntrinsics());
+        final Program theSSAProgram = theGenerator.generateFrom(theKernelClass.getBytecodeClass(), theKernelMethod);
 
         //Run optimizer
         aOptions.getOptimizer().optimize(theSSAProgram.getControlFlowGraph(), aLinkerContext);
+
+        // Perform register allocation
+        final AbstractAllocator theKernelAllocator = aOptions.getAllocator().allocate(theSSAProgram, t -> t.resolveType(), aLinkerContext);
+
 
         // Ok, at this point we have to map kernel arguments
         // Every member of the kernel class becomes a kernel function argument
         try {
             theInputOutputs = inputOutputsFor(theLinkerContext, theKernelClass, theSSAProgram);
-        } catch (Exception e) {
+        } catch (final Exception e) {
             throw new RuntimeException(e);
         }
 
         // And then we ca pass it to the code generator to generate the kernel code
-        OpenCLWriter theSSAWriter = new OpenCLWriter(theKernelClass, aOptions, theSSAProgram, "", new PrintWriter(theStrWriter), aLinkerContext, theInputOutputs);
-
-        // We use the relooper here
-        Relooper theRelooper = new Relooper();
+        final OpenCLWriter theSSAWriter = new OpenCLWriter(theKernelClass, aOptions, theSSAProgram, new PrintWriter(theStrWriter), aLinkerContext, theInputOutputs);
 
         theMethodMap.stream().forEach(aMethodMapEntry -> {
-            BytecodeMethod theMethod = aMethodMapEntry.getValue();
+            final BytecodeMethod theMethod = aMethodMapEntry.getValue();
 
             if (theMethod.isConstructor()) {
                 return;
             }
 
+            if (theKernelClass != aMethodMapEntry.getProvidingClass()) {
+                return;
+            }
+
             if (theMethod != theKernelMethod) {
-                Program theSSAProgram1 = theGenerator.generateFrom(aMethodMapEntry.getProvidingClass().getBytecodeClass(), theMethod);
+                final Program theSSAProgram1 = theGenerator.generateFrom(aMethodMapEntry.getProvidingClass().getBytecodeClass(), theMethod);
 
                 //Run optimizer
                 aOptions.getOptimizer().optimize(theSSAProgram1.getControlFlowGraph(), aLinkerContext);
 
+                // Perform register allocation
+                final AbstractAllocator theAllocator = aOptions.getAllocator().allocate(theSSAProgram1, t -> t.resolveType(), aLinkerContext);
+
                 // Write the method to the output
                 // Try to reloop it!
                 try {
-                    Relooper.Block theReloopedBlock = theRelooper.reloop(theSSAProgram1.getControlFlowGraph());
+                    if (aOptions.isPreferStackifier()) {
+                        try {
+                            final Stackifier stackifier = new Stackifier(theSSAProgram1.getControlFlowGraph());
+                            theSSAWriter.writeStackifiedInline(theMethod, theSSAProgram1, stackifier, theAllocator);
 
-                    theSSAWriter.printReloopedInline(theMethod, theSSAProgram1, theReloopedBlock);
-                } catch (Exception e) {
+                        } catch (final HeadToHeadControlFlowException e) {
+
+                            // Stackifier has problems, we fallback to relooper instead
+                            aOptions.getLogger().warn("Method {}.{} could not be stackified, using Relooper instead", aMethodMapEntry.getProvidingClass().getClassName().name(), aMethodMapEntry.getValue().getName().stringValue());
+
+                            final Relooper theRelooper = new Relooper(aOptions);
+                            final Relooper.Block theReloopedBlock = theRelooper.reloop(theSSAProgram.getControlFlowGraph());
+
+                            theSSAWriter.printReloopedInline(theMethod, theSSAProgram1, theReloopedBlock, theAllocator);
+                        }
+                    } else {
+
+                        final Relooper theRelooper = new Relooper(aOptions);
+                        final Relooper.Block theReloopedBlock = theRelooper.reloop(theSSAProgram.getControlFlowGraph());
+
+                        theSSAWriter.printReloopedInline(theMethod, theSSAProgram1, theReloopedBlock, theAllocator);
+
+                    }
+
+                } catch (final Exception e) {
                     throw new IllegalStateException("Error relooping cfg", e);
                 }
 
@@ -121,49 +151,53 @@ public class OpenCLCompileBackend implements CompileBackend<OpenCLCompileResult>
         });
 
         // Finally, we write the kernel method
-        try {
-            Relooper.Block theReloopedBlock = theRelooper.reloop(theSSAProgram.getControlFlowGraph());
 
-            theSSAWriter.printReloopedKernel(theSSAProgram, theReloopedBlock);
-        } catch (Exception e) {
+        try {
+            if (aOptions.isPreferStackifier()) {
+                try {
+                    final Stackifier stackifier = new Stackifier(theSSAProgram.getControlFlowGraph());
+                    theSSAWriter.writeStackifiedKernel(theSSAProgram, stackifier, theKernelAllocator);
+
+                } catch (final HeadToHeadControlFlowException e) {
+
+                    // Stackifier has problems, we fallback to relooper instead
+                    aOptions.getLogger().warn("Method %s could not be stackified, using Relooper instead", theKernelClass.getClassName().name() + "." + theKernelMethod.getName().stringValue());
+
+                    final Relooper theRelooper = new Relooper(aOptions);
+                    final Relooper.Block theReloopedBlock = theRelooper.reloop(theSSAProgram.getControlFlowGraph());
+
+                    theSSAWriter.printReloopedKernel(theReloopedBlock, theKernelAllocator);
+                }
+            } else {
+
+                final Relooper theRelooper = new Relooper(aOptions);
+                final Relooper.Block theReloopedBlock = theRelooper.reloop(theSSAProgram.getControlFlowGraph());
+
+                theSSAWriter.printReloopedKernel(theReloopedBlock, theKernelAllocator);
+
+            }
+
+        } catch (final Exception e) {
             throw new IllegalStateException("Error relooping cfg", e);
         }
 
-        return new OpenCLCompileResult(theInputOutputs, theStrWriter.toString());
+        return new OpenCLCompileResult(new OpenCLCompileResult.OpenCLContent(theInputOutputs, theStrWriter.toString()));
     }
 
-    @Override
-    public String generatedFileName() {
-        return "BytecoderKernel";
-    }
-
-    private OpenCLInputOutputs inputOutputsFor(BytecodeLinkerContext aLinkerContext, BytecodeLinkedClass aKernelClass, Program aProgram) {
-        OpenCLInputOutputs theResult = new OpenCLInputOutputs();
-        for (RegionNode theNode : aProgram.getControlFlowGraph().getKnownNodes()) {
+    private OpenCLInputOutputs inputOutputsFor(final BytecodeLinkerContext aLinkerContext, final BytecodeLinkedClass aKernelClass, final Program aProgram) {
+        final OpenCLInputOutputs theResult = new OpenCLInputOutputs();
+        for (final RegionNode theNode : aProgram.getControlFlowGraph().dominators().getPreOrder()) {
             fillInputOutputs(aLinkerContext, aKernelClass, theNode.getExpressions(), theResult);
         }
         return theResult;
     }
 
-    private void fillInputOutputs(BytecodeLinkerContext aContext, BytecodeLinkedClass aKernelClass, ExpressionList aExpressionList, OpenCLInputOutputs aInputOutputs) {
-        BytecodeResolvedFields theInstanceFields = aKernelClass.resolvedFields();
+    private void fillInputOutputs(
+            final BytecodeLinkerContext aContext, final BytecodeLinkedClass aKernelClass, final ExpressionList aExpressionList, final OpenCLInputOutputs aInputOutputs) {
+        final BytecodeResolvedFields theInstanceFields = aKernelClass.resolvedFields();
         theInstanceFields.streamForInstanceFields().forEach(aEntry -> {
             aInputOutputs.registerReadFrom(aEntry);
             aInputOutputs.registerWriteTo(aEntry);
         });
-    }
-
-    private void registerInputs(BytecodeLinkerContext aContext, BytecodeLinkedClass aKernelClass, Value aValue, OpenCLInputOutputs aInputOutputs) {
-        if (aValue instanceof GetFieldExpression) {
-            GetFieldExpression theGetField = (GetFieldExpression) aValue;
-
-            BytecodeLinkedClass theClass = aContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(theGetField.getField().getClassIndex().getClassConstant().getConstant()));
-            if (theClass == aKernelClass) {
-                BytecodeResolvedFields theInstanceFields = aKernelClass.resolvedFields();
-                BytecodeResolvedFields.FieldEntry theField = theInstanceFields.fieldByName(
-                        theGetField.getField().getNameAndTypeIndex().getNameAndType().getNameIndex().getName().stringValue());
-                aInputOutputs.registerReadFrom(theField);
-            }
-        }
     }
 }

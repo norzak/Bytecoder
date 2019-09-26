@@ -15,41 +15,22 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
-import java.util.ArrayList;
-import java.util.List;
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
 
 public class VariableAssignmentExpression extends Expression {
 
     private final Variable variable;
-    private Value value;
 
-    public VariableAssignmentExpression(Variable aVariable, Value aValue) {
+    public VariableAssignmentExpression(final Program aProgram, final BytecodeOpcodeAddress aAddress, final Variable aVariable, final Value aValue) {
+        super(aProgram, aAddress);
         if (aValue == null) {
             throw new IllegalStateException("Null not allowed");
         }
         variable = aVariable;
-        value = aValue;
+        receivesDataFrom(aValue);
     }
 
     public Variable getVariable() {
         return variable;
-    }
-
-    public Value getValue() {
-        return value;
-    }
-
-    @Override
-    public void replaceIncomingDataEdge(Value aOldValue, Value aNewValue) {
-        if (value == aOldValue) {
-            value = aNewValue;
-        }
-    }
-
-    @Override
-    public <T extends Value> List<T> incomingDataFlows() {
-        List<T> theResult = new ArrayList<>();
-        theResult.add((T) value);
-        return theResult;
     }
 }

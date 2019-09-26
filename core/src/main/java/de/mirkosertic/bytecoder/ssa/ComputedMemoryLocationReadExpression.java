@@ -15,9 +15,12 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+
 public class ComputedMemoryLocationReadExpression extends Expression {
 
-    public ComputedMemoryLocationReadExpression(Value aOrigin, Value aOffset) {
+    public ComputedMemoryLocationReadExpression(final Program aProgram, final BytecodeOpcodeAddress aAddress, final Value aOrigin, final Value aOffset) {
+        super(aProgram, aAddress);
         receivesDataFrom(aOrigin, aOffset);
     }
 

@@ -15,19 +15,19 @@
  */
 package de.mirkosertic.bytecoder.core;
 
-import de.mirkosertic.bytecoder.classlib.java.lang.TArray;
+import de.mirkosertic.bytecoder.classlib.Array;
 
 public class BytecodeInstructionNEWARRAY extends BytecodeInstruction {
 
     private final BytecodePrimitiveTypeRef type;
 
-    public BytecodeInstructionNEWARRAY(BytecodeOpcodeAddress aOpcodeIndex, BytecodePrimitiveTypeRef aType) {
+    public BytecodeInstructionNEWARRAY(final BytecodeOpcodeAddress aOpcodeIndex, final BytecodePrimitiveTypeRef aType) {
         super(aOpcodeIndex);
         type = aType;
     }
 
     public BytecodeObjectTypeRef getObjectType() {
-        return BytecodeObjectTypeRef.fromRuntimeClass(TArray.class);
+        return BytecodeObjectTypeRef.fromRuntimeClass(Array.class);
     }
 
     public BytecodePrimitiveTypeRef getPrimitiveType() {
@@ -35,7 +35,7 @@ public class BytecodeInstructionNEWARRAY extends BytecodeInstruction {
     }
 
     @Override
-    public void performLinking(BytecodeClass aOwningClass, BytecodeLinkerContext aLinkerContext) {
+    public void performLinking(final BytecodeClass aOwningClass, final BytecodeLinkerContext aLinkerContext) {
         aLinkerContext.resolveClass(getObjectType());
     }
 }

@@ -15,11 +15,14 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+
 public class ArrayEntryExpression extends Expression {
 
     private final TypeRef arrayType;
 
-    public ArrayEntryExpression(TypeRef aArrayType, Value aArray, Value aIndex) {
+    public ArrayEntryExpression(final Program aProgram, final BytecodeOpcodeAddress aAddress, final TypeRef aArrayType, final Value aArray, final Value aIndex) {
+        super(aProgram, aAddress);
         arrayType = aArrayType;
         receivesDataFrom(aArray, aIndex);
     }

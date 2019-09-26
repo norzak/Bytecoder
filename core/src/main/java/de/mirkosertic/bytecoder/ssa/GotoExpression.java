@@ -21,11 +21,12 @@ public class GotoExpression extends Expression {
 
     private final BytecodeOpcodeAddress jumpTarget;
 
-    public GotoExpression(BytecodeOpcodeAddress aJumpTarget) {
+    public GotoExpression(final Program aProgram, final BytecodeOpcodeAddress aAddress, final BytecodeOpcodeAddress aJumpTarget) {
+        super(aProgram, aAddress);
         jumpTarget = aJumpTarget;
     }
 
-    public BytecodeOpcodeAddress getJumpTarget() {
+    public BytecodeOpcodeAddress jumpTarget() {
         return jumpTarget;
     }
 }

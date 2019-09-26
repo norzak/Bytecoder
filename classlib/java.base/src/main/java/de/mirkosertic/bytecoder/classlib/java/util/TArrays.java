@@ -15,18 +15,105 @@
  */
 package de.mirkosertic.bytecoder.classlib.java.util;
 
-import de.mirkosertic.bytecoder.classlib.java.lang.TObject;
+import java.util.ArrayList;
+import java.util.List;
 
+import de.mirkosertic.bytecoder.api.SubstitutesInClass;
+
+@SubstitutesInClass(completeReplace = true)
 public class TArrays {
 
-    public static void sort(TObject[] aData, int aStart, int aEnd) {
+    public static void sort(final Object[] aData, final int aStart, final int aEnd) {
     }
 
-    public static <T> TList<T> asList(T... aValues) {
-        TArrayList<T> theResult = new TArrayList<>();
-        for (T theValue : aValues) {
+    public static <T> List<T> asList(final T... aValues) {
+        final ArrayList<T> theResult = new ArrayList<>();
+        for (final T theValue : aValues) {
             theResult.add(theValue);
         }
         return theResult;
+    }
+
+    public static <T> T[] copyOf(final T[] original, final int newLength) {
+        return copyOf(original, newLength, null);
+    }
+
+    public static <T> T[] copyOf(final T[] original, final int newLength, final Class aType) {
+        final T[] theResult = (T[]) new Object[newLength];
+        for (int i=0;i<Math.min(newLength, original.length);i++) {
+            theResult[i] = original[i];
+        }
+        return theResult;
+    }
+
+    public static int[] copyOf(final int[] original, final int newLength) {
+        final int[] theResult = new int[newLength];
+        for (int i=0;i<Math.min(newLength, original.length);i++) {
+            theResult[i] = original[i];
+        }
+        return theResult;
+    }
+
+    public static byte[] copyOf(final byte[] original, final int newLength) {
+        final byte[] theResult = new byte[newLength];
+        for (int i=0;i<Math.min(newLength, original.length);i++) {
+            theResult[i] = original[i];
+        }
+        return theResult;
+    }
+
+    public static char[] copyOf(final char[] original, final int newLength) {
+        final char[] theResult = new char[newLength];
+        for (int i=0;i<Math.min(newLength, original.length);i++) {
+            theResult[i] = original[i];
+        }
+        return theResult;
+    }
+
+    public static <T> T[] copyOfRange(final T[] original, final int from, final int to, final Class aType) {
+        final T[] theResult = (T[]) new Object[to - from];
+        for (int i=from;i<to;i++) {
+            theResult[i-from] = original[i];
+        }
+        return theResult;
+    }
+
+    public static Object[] copyOfRange(final Object[] original, final int from, final int to) {
+        final Object[] theResult = new Object[to - from];
+        for (int i=from;i<to;i++) {
+            theResult[i-from] = original[i];
+        }
+        return theResult;
+    }
+
+    public static int[] copyOfRange(final int[] original, final int from, final int to) {
+        final int[] theResult = new int[to - from];
+        for (int i=from;i<to;i++) {
+            theResult[i-from] = original[i];
+        }
+        return theResult;
+    }
+
+    public static byte[] copyOfRange(final byte[] original, final int from, final int to) {
+        final byte[] theResult = new byte[to - from];
+        for (int i=from;i<to;i++) {
+            theResult[i-from] = original[i];
+        }
+        return theResult;
+    }
+
+    public static void fill(final char[] a, final int fromIndex, final int toIndex, final char val) {
+        for (int i = fromIndex; i < toIndex; i++)
+            a[i] = val;
+    }
+
+    public static void fill(final int[] a, final int fromIndex, final int toIndex, final int val) {
+        for (int i = fromIndex; i < toIndex; i++)
+            a[i] = val;
+    }
+
+    public static void fill(final int[] a, final int val) {
+        for (int i = 0, len = a.length; i < len; i++)
+            a[i] = val;
     }
 }

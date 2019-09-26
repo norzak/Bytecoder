@@ -15,7 +15,13 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+
 public class CurrentExceptionExpression extends Expression {
+
+    public CurrentExceptionExpression(final Program aProgram, final BytecodeOpcodeAddress address) {
+        super(aProgram, address);
+    }
 
     @Override
     public TypeRef resolveType() {

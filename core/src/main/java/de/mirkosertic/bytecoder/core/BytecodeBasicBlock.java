@@ -16,7 +16,9 @@
 package de.mirkosertic.bytecoder.core;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class BytecodeBasicBlock {
 
@@ -29,14 +31,26 @@ public class BytecodeBasicBlock {
     private final List<BytecodeInstruction> instructions;
     private final List<BytecodeBasicBlock> successors;
     private final Type type;
+    private final Set<BytecodeUtf8Constant> catchType;
 
-    public BytecodeBasicBlock(Type aType) {
+    public BytecodeBasicBlock(final Type aType) {
         instructions = new ArrayList<>();
         successors = new ArrayList<>();
         type = aType;
+        catchType = null;
+    }
+    public BytecodeBasicBlock(final Set<BytecodeUtf8Constant> aCatchType) {
+        instructions = new ArrayList<>();
+        successors = new ArrayList<>();
+        type = Type.EXCEPTION_HANDLER;
+        catchType = aCatchType;
     }
 
-    public void addSuccessor(BytecodeBasicBlock aBasicBlock) {
+    public Set<BytecodeUtf8Constant> getCatchType() {
+        return catchType;
+    }
+
+    public void addSuccessor(final BytecodeBasicBlock aBasicBlock) {
         successors.add(aBasicBlock);
     }
 
@@ -52,7 +66,7 @@ public class BytecodeBasicBlock {
         return instructions.get(0).getOpcodeAddress();
     }
 
-    public void addInstruction(BytecodeInstruction aInstruction) {
+    public void addInstruction(final BytecodeInstruction aInstruction) {
         instructions.add(aInstruction);
     }
 
@@ -60,33 +74,24 @@ public class BytecodeBasicBlock {
         return instructions;
     }
 
-    public boolean endsWithJump() {
-        return instructions.get(instructions.size() - 1).isJumpSource();
-    }
-
-    public boolean endsWithConditionalJump() {
-        BytecodeInstruction theInstruction = instructions.get(instructions.size() - 1);
-        return theInstruction instanceof BytecodeInstructionIFICMP ||
-                theInstruction instanceof BytecodeInstructionIFNULL ||
-                theInstruction instanceof BytecodeInstructionIFCOND ||
-                theInstruction instanceof BytecodeInstructionIFACMP ||
-                theInstruction instanceof BytecodeInstructionIFNONNULL;
-    }
-
     public boolean endsWithReturn() {
-        BytecodeInstruction theLastInstruction = instructions.get(instructions.size() - 1);
+        final BytecodeInstruction theLastInstruction = instructions.get(instructions.size() - 1);
         return theLastInstruction instanceof BytecodeInstructionRETURN ||
                 theLastInstruction instanceof BytecodeInstructionGenericRETURN ||
                 theLastInstruction instanceof BytecodeInstructionObjectRETURN;
     }
 
     public boolean endsWithGoto() {
-        BytecodeInstruction theLastInstruction = instructions.get(instructions.size() - 1);
+        final BytecodeInstruction theLastInstruction = instructions.get(instructions.size() - 1);
         return theLastInstruction instanceof BytecodeInstructionGOTO;
     }
 
     public boolean endsWithThrow() {
-        BytecodeInstruction theLastInstruction = instructions.get(instructions.size() - 1);
+        final BytecodeInstruction theLastInstruction = instructions.get(instructions.size() - 1);
         return theLastInstruction instanceof BytecodeInstructionATHROW;
+    }
+
+    public BytecodeInstruction lastInstruction() {
+        return instructions.get(instructions.size() - 1);
     }
 }

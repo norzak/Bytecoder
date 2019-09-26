@@ -15,10 +15,17 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+
 public class MemorySizeExpression extends Expression {
+
+    public MemorySizeExpression(final Program aProgram, final BytecodeOpcodeAddress address) {
+        super(aProgram, address);
+    }
 
     @Override
     public TypeRef resolveType() {
         return TypeRef.Native.INT;
     }
+
 }

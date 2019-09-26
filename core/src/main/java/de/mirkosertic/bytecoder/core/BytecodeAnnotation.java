@@ -28,14 +28,14 @@ public class BytecodeAnnotation {
         private final int constValueIndex;
         private final BytecodeConstantPool constantPool;
 
-        public StringElementValue(int aConstValueIndex, BytecodeConstantPool aConstantPool) {
+        public StringElementValue(final int aConstValueIndex, final BytecodeConstantPool aConstantPool) {
             constValueIndex = aConstValueIndex;
             constantPool = aConstantPool;
         }
 
         @Override
         public String stringValue() {
-            BytecodeUtf8Constant theString = (BytecodeUtf8Constant) constantPool.constantByIndex(constValueIndex - 1);
+            final BytecodeUtf8Constant theString = (BytecodeUtf8Constant) constantPool.constantByIndex(constValueIndex - 1);
             return theString.stringValue();
         }
     }
@@ -44,14 +44,18 @@ public class BytecodeAnnotation {
         private final int constValueIndex;
         private final BytecodeConstantPool constantPool;
 
-        public BooleanElementValue(int aConstValueIndex, BytecodeConstantPool aConstantPool) {
+        public BooleanElementValue(final int aConstValueIndex, final BytecodeConstantPool aConstantPool) {
             constValueIndex = aConstValueIndex;
             constantPool = aConstantPool;
         }
 
         @Override
         public String stringValue() {
-            throw new IllegalStateException("Not implemented yet");
+            final BytecodeIntegerConstant theConstant = (BytecodeIntegerConstant) constantPool.constantByIndex(constValueIndex - 1);
+            if (theConstant.getIntegerValue() == 1) {
+                return "true";
+            }
+            return "false";
         }
     }
 
@@ -59,7 +63,7 @@ public class BytecodeAnnotation {
         private final int constValueIndex;
         private final BytecodeConstantPool constantPool;
 
-        public IntegerElementValue(int aConstValueIndex, BytecodeConstantPool aConstantPool) {
+        public IntegerElementValue(final int aConstValueIndex, final BytecodeConstantPool aConstantPool) {
             constValueIndex = aConstValueIndex;
             constantPool = aConstantPool;
         }
@@ -70,7 +74,7 @@ public class BytecodeAnnotation {
         }
 
         public int intVakue() {
-            BytecodeIntegerConstant theInt = (BytecodeIntegerConstant) constantPool.constantByIndex(constValueIndex - 1);
+            final BytecodeIntegerConstant theInt = (BytecodeIntegerConstant) constantPool.constantByIndex(constValueIndex - 1);
             return theInt.getIntegerValue();
         }
     }
@@ -81,7 +85,7 @@ public class BytecodeAnnotation {
         private final BytecodeConstantPool constantPool;
         private final BytecodeSignatureParser signatureParser;
 
-        public ClassElementValue(int aClassInfoIndex, BytecodeConstantPool aConstantPool, BytecodeSignatureParser aSignatureParser) {
+        public ClassElementValue(final int aClassInfoIndex, final BytecodeConstantPool aConstantPool, final BytecodeSignatureParser aSignatureParser) {
             classInfoIndex = aClassInfoIndex;
             constantPool = aConstantPool;
             signatureParser = aSignatureParser;
@@ -89,15 +93,15 @@ public class BytecodeAnnotation {
 
         @Override
         public String stringValue() {
-            BytecodeUtf8Constant theConstant = (BytecodeUtf8Constant) constantPool.constantByIndex(classInfoIndex - 1);
-            BytecodeTypeRef[] theTypes = signatureParser.toTypes(theConstant.stringValue());
+            final BytecodeUtf8Constant theConstant = (BytecodeUtf8Constant) constantPool.constantByIndex(classInfoIndex - 1);
+            final BytecodeTypeRef[] theTypes = signatureParser.toTypes(theConstant.stringValue());
             return theTypes[0].name();
         }
     }
 
     public static class EnumElementValue implements ElementValue {
-        public EnumElementValue(BytecodeConstantPool aConstantPool,
-                int aTypeNameIndex, int aConstNameIndex) {
+        public EnumElementValue(final BytecodeConstantPool aConstantPool,
+                                final int aTypeNameIndex, final int aConstNameIndex) {
         }
 
         @Override
@@ -107,8 +111,19 @@ public class BytecodeAnnotation {
     }
 
     public static class ArrayElementValue implements ElementValue {
-        public ArrayElementValue(BytecodeConstantPool aConstantPool,
-                ElementValue[] aValues) {
+        public ArrayElementValue(final BytecodeConstantPool aConstantPool,
+                                 final ElementValue[] aValues) {
+        }
+
+        @Override
+        public String stringValue() {
+            throw new IllegalStateException("Not implemented yet");
+        }
+    }
+
+    public static class AnnotationElementValueElementValue implements ElementValue {
+        public AnnotationElementValueElementValue(final BytecodeConstantPool aConstantPool,
+                                                  final BytecodeAnnotation annotation) {
         }
 
         @Override
@@ -123,7 +138,7 @@ public class BytecodeAnnotation {
         private final ElementValue elementValue;
         private final BytecodeConstantPool constantPool;
 
-        public ElementValuePair(int aElementNameIndex, ElementValue aElementValue, BytecodeConstantPool aConstantPool) {
+        public ElementValuePair(final int aElementNameIndex, final ElementValue aElementValue, final BytecodeConstantPool aConstantPool) {
             elementNameIndex = aElementNameIndex;
             elementValue = aElementValue;
             constantPool = aConstantPool;
@@ -143,7 +158,7 @@ public class BytecodeAnnotation {
     private final BytecodeConstantPool constantPool;
     private final BytecodeSignatureParser signatureParser;
 
-    public BytecodeAnnotation(int aTypeIndex, ElementValuePair[] aElementValuePairs, BytecodeConstantPool aConstantPool, BytecodeSignatureParser aSignatureParser) {
+    public BytecodeAnnotation(final int aTypeIndex, final ElementValuePair[] aElementValuePairs, final BytecodeConstantPool aConstantPool, final BytecodeSignatureParser aSignatureParser) {
         typeIndex = aTypeIndex;
         elementValuePairs = aElementValuePairs;
         constantPool = aConstantPool;
@@ -151,13 +166,13 @@ public class BytecodeAnnotation {
     }
 
     public BytecodeTypeRef getType() {
-        BytecodeUtf8Constant theConstant = (BytecodeUtf8Constant) constantPool.constantByIndex(typeIndex - 1);
-        BytecodeTypeRef[] theRefs = signatureParser.toTypes(theConstant.stringValue());
+        final BytecodeUtf8Constant theConstant = (BytecodeUtf8Constant) constantPool.constantByIndex(typeIndex - 1);
+        final BytecodeTypeRef[] theRefs = signatureParser.toTypes(theConstant.stringValue());
         return theRefs[0];
     }
 
-    public ElementValue getElementValueByName(String aAttributeName) {
-        for (ElementValuePair thePair : elementValuePairs) {
+    public ElementValue getElementValueByName(final String aAttributeName) {
+        for (final ElementValuePair thePair : elementValuePairs) {
             if (Objects.equals(thePair.getName().stringValue(), aAttributeName)) {
                 return thePair.getValue();
             }

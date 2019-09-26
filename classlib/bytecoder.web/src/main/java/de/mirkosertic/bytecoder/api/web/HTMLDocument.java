@@ -15,9 +15,49 @@
  */
 package de.mirkosertic.bytecoder.api.web;
 
-public class HTMLDocument {
+import de.mirkosertic.bytecoder.api.OpaqueProperty;
 
-    public <T extends Element> T getElementById(String aId) {
-        return(T)  new Canvas(aId);
-    }
+public interface HTMLDocument extends Document {
+
+    @OpaqueProperty
+    Element activeElement();
+
+    @OpaqueProperty
+    Element body();
+
+    @OpaqueProperty
+    String cookie();
+
+    @OpaqueProperty
+    Window defaultView();
+
+    @OpaqueProperty
+    String dir();
+
+    @OpaqueProperty
+    String domain();
+
+    @OpaqueProperty
+    Element head();
+
+    @OpaqueProperty
+    int height();
+
+    @OpaqueProperty
+    String lastModified();
+
+    @OpaqueProperty
+    String location();
+
+    @OpaqueProperty
+    String referrer();
+
+    @OpaqueProperty
+    int width();
+
+    @OpaqueProperty
+    String title();
+
+    @OpaqueProperty
+    void title(String aNewTitle);
 }

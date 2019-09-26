@@ -15,6 +15,9 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -24,8 +27,9 @@ public class LookupSwitchExpression extends Expression implements ExpressionList
     private final ExpressionList defaultExpressions;
     private final Map<Long, ExpressionList> pairs;
 
-    public LookupSwitchExpression(Value aValue, ExpressionList aDefaultExpressions,
-            Map<Long, ExpressionList> aPairs) {
+    public LookupSwitchExpression(final Program aProgram, final BytecodeOpcodeAddress aAddress, final Value aValue, final ExpressionList aDefaultExpressions,
+            final Map<Long, ExpressionList> aPairs) {
+        super(aProgram, aAddress);
         defaultExpressions = aDefaultExpressions;
         pairs = aPairs;
         receivesDataFrom(aValue);
@@ -41,9 +45,18 @@ public class LookupSwitchExpression extends Expression implements ExpressionList
 
     @Override
     public Set<ExpressionList> getExpressionLists() {
-        Set<ExpressionList> theResult = new HashSet<>();
+        final Set<ExpressionList> theResult = new HashSet<>();
         theResult.add(defaultExpressions);
         theResult.addAll(pairs.values());
         return theResult;
+    }
+
+    @Override
+    public Expression deepCopy() {
+        final Map<Long, ExpressionList> thePairs = new HashMap<>();
+        for (final Map.Entry<Long, ExpressionList> theEntry : pairs.entrySet()) {
+            thePairs.put(theEntry.getKey(), theEntry.getValue().deepCopy());
+        }
+        return new LookupSwitchExpression(getProgram(), getAddress(), incomingDataFlows().get(0), defaultExpressions.deepCopy(), thePairs);
     }
 }

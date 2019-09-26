@@ -15,11 +15,14 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+
 public class FloorExpression extends Expression {
 
     private final TypeRef type;
 
-    public FloorExpression(Value aValue, TypeRef aTargetType) {
+    public FloorExpression(final Program aProgram, final BytecodeOpcodeAddress aAddress, final Value aValue, final TypeRef aTargetType) {
+        super(aProgram, aAddress);
         type = aTargetType;
         receivesDataFrom(aValue);
     }

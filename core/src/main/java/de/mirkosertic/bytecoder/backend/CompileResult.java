@@ -15,8 +15,29 @@
  */
 package de.mirkosertic.bytecoder.backend;
 
+import org.apache.commons.io.output.WriterOutputStream;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.StringWriter;
+import java.nio.charset.Charset;
+
 public interface CompileResult<T> {
 
-    T getData();
+    interface Content {
+        String getFileName();
+
+        void writeTo(OutputStream stream) throws IOException;
+
+        default String asString() throws IOException {
+            final StringWriter strData = new StringWriter();
+            try (final WriterOutputStream wos = new WriterOutputStream(strData, Charset.defaultCharset())) {
+                writeTo(wos);
+            }
+            return strData.toString();
+        }
+    }
+
+    Content[] getContent();
 }
 

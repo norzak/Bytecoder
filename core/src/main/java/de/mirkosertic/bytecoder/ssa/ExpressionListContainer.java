@@ -20,4 +20,6 @@ import java.util.Set;
 public interface ExpressionListContainer {
 
     Set<ExpressionList> getExpressionLists();
+
+    Expression deepCopy();
 }

@@ -15,410 +15,728 @@
  */
 package de.mirkosertic.bytecoder.backend.js;
 
+import de.mirkosertic.bytecoder.allocator.AbstractAllocator;
 import de.mirkosertic.bytecoder.api.EmulatedByRuntime;
+import de.mirkosertic.bytecoder.api.Export;
 import de.mirkosertic.bytecoder.backend.CompileBackend;
 import de.mirkosertic.bytecoder.backend.CompileOptions;
-import de.mirkosertic.bytecoder.backend.wasm.WASMWriterUtils;
-import de.mirkosertic.bytecoder.classlib.ExceptionRethrower;
-import de.mirkosertic.bytecoder.classlib.java.lang.TArray;
-import de.mirkosertic.bytecoder.classlib.java.lang.TString;
-import de.mirkosertic.bytecoder.classlib.java.lang.TThrowable;
+import de.mirkosertic.bytecoder.backend.ConstantPool;
+import de.mirkosertic.bytecoder.backend.SourceMapWriter;
+import de.mirkosertic.bytecoder.classlib.Array;
+import de.mirkosertic.bytecoder.classlib.ExceptionManager;
+import de.mirkosertic.bytecoder.core.BytecodeAnnotation;
 import de.mirkosertic.bytecoder.core.BytecodeArrayTypeRef;
-import de.mirkosertic.bytecoder.core.BytecodeClassinfoConstant;
-import de.mirkosertic.bytecoder.core.BytecodeExceptionTableEntry;
-import de.mirkosertic.bytecoder.core.BytecodeResolvedFields;
+import de.mirkosertic.bytecoder.core.BytecodeClassTopologicOrder;
 import de.mirkosertic.bytecoder.core.BytecodeImportedLink;
-import de.mirkosertic.bytecoder.core.BytecodeInstruction;
 import de.mirkosertic.bytecoder.core.BytecodeLinkedClass;
 import de.mirkosertic.bytecoder.core.BytecodeLinkerContext;
 import de.mirkosertic.bytecoder.core.BytecodeMethod;
-import de.mirkosertic.bytecoder.core.BytecodeResolvedMethods;
 import de.mirkosertic.bytecoder.core.BytecodeMethodSignature;
 import de.mirkosertic.bytecoder.core.BytecodeObjectTypeRef;
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
 import de.mirkosertic.bytecoder.core.BytecodePrimitiveTypeRef;
-import de.mirkosertic.bytecoder.core.BytecodeProgram;
+import de.mirkosertic.bytecoder.core.BytecodeResolvedFields;
+import de.mirkosertic.bytecoder.core.BytecodeResolvedMethods;
 import de.mirkosertic.bytecoder.core.BytecodeTypeRef;
 import de.mirkosertic.bytecoder.relooper.Relooper;
 import de.mirkosertic.bytecoder.ssa.Program;
 import de.mirkosertic.bytecoder.ssa.ProgramGenerator;
 import de.mirkosertic.bytecoder.ssa.ProgramGeneratorFactory;
+import de.mirkosertic.bytecoder.ssa.StringValue;
 import de.mirkosertic.bytecoder.ssa.Variable;
+import de.mirkosertic.bytecoder.stackifier.HeadToHeadControlFlowException;
+import de.mirkosertic.bytecoder.stackifier.Stackifier;
 
-import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.util.HashSet;
-import java.util.Objects;
-import java.util.Set;
+import java.util.List;
 
 public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
 
-    private final BytecodeMethodSignature registerExceptionOutcomeSignature;
-    private final BytecodeMethodSignature getLastExceptionOutcomeSignature;
+    private final BytecodeMethodSignature pushExceptionSignature;
+    private final BytecodeMethodSignature popExceptionSignature;
     private final ProgramGeneratorFactory programGeneratorFactory;
 
-    public JSSSACompilerBackend(ProgramGeneratorFactory aProgramGeneratorFactory) {
+    public JSSSACompilerBackend(final ProgramGeneratorFactory aProgramGeneratorFactory) {
         programGeneratorFactory = aProgramGeneratorFactory;
-        registerExceptionOutcomeSignature = new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[] {BytecodeObjectTypeRef.fromRuntimeClass(TThrowable.class)});
-        getLastExceptionOutcomeSignature = new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(TThrowable.class), new BytecodeTypeRef[0]);
+        pushExceptionSignature = new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[] {BytecodeObjectTypeRef.fromRuntimeClass(Throwable.class)});
+        popExceptionSignature = new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(Throwable.class), new BytecodeTypeRef[0]);
     }
 
     @Override
-    public JSCompileResult generateCodeFor(CompileOptions aOptions, BytecodeLinkerContext aLinkerContext, Class aEntryPointClass, String aEntryPointMethodName, BytecodeMethodSignature aEntryPointSignatue) {
+    public JSCompileResult generateCodeFor(final CompileOptions aOptions, final BytecodeLinkerContext aLinkerContext, final Class aEntryPointClass, final String aEntryPointMethodName, final BytecodeMethodSignature aEntryPointSignatue) {
 
-        BytecodeLinkedClass theExceptionRethrower = aLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(
-                ExceptionRethrower.class));
-        theExceptionRethrower.resolveStaticMethod("registerExceptionOutcome", registerExceptionOutcomeSignature);
-        theExceptionRethrower.resolveStaticMethod("getLastOutcomeOrNullAndReset", getLastExceptionOutcomeSignature);
+        final SourceMapWriter theSourceMapWriter = new SourceMapWriter();
+        final JSMinifier theMinifier = new JSMinifier(aOptions);
 
-        StringWriter theStrWriter = new StringWriter();
-        PrintWriter theWriter = new PrintWriter(theStrWriter);
-        theWriter.println("'use strict';");
+        final BytecodeLinkedClass theExceptionManager = aLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(
+                ExceptionManager.class));
+        theExceptionManager.resolveStaticMethod("push", pushExceptionSignature);
+        theExceptionManager.resolveStaticMethod("pop", popExceptionSignature);
+        theExceptionManager.resolveStaticMethod("lastExceptionOrNull", popExceptionSignature);
 
-        theWriter.println();
-        theWriter.println("var bytecoderGlobalMemory = [];");
-        theWriter.println();
+        final StringWriter theStrWriter = new StringWriter();
+        final JSPrintWriter theWriter = new JSPrintWriter(theStrWriter, theMinifier, theSourceMapWriter);
+        theWriter.print("'use strict';").newLine();
 
-        theWriter.println("var bytecoder = {");
+        theWriter.text("var bytecoder").assign().text("{").newLine();
 
-        theWriter.println();
-        theWriter.println("     logDebug : function(aValue) { ");
-        theWriter.println("         console.log(aValue);");
-        theWriter.println("     }, ");
+        theWriter.tab().text("logCharArrayAsString").colon().text("function(aArray)").space().text("{").newLine();
+        theWriter.tab(2).text("var theResult").assign().text("'';").newLine();
+        theWriter.tab(2).text("for").space().text("(var i=0;i<aArray.data.length;i++)").space().text("{").newLine();
+        theWriter.tab(2).tab().text("theResult").space().text("+=").space().text("String.fromCharCode(aArray.data[i]);").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("console.log(theResult);").newLine();
+        theWriter.tab().text("},").newLine();
 
-        theWriter.println();
-        theWriter.println("     logByteArrayAsString : function(aArray) { ");
-        theWriter.println("         var theResult = '';");
-        theWriter.println("         for (var i=0;i<aArray.data.length;i++) {");
-        theWriter.println("             theResult += String.fromCharCode(aArray.data[i]);");
-        theWriter.println("         }");
-        theWriter.println("         console.log(theResult);");
-        theWriter.println("     }, ");
-        theWriter.println();
+        final BytecodeObjectTypeRef theStringTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(String.class);
+        final BytecodeObjectTypeRef theArrayTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(Array.class);
 
-        theWriter.println("     newString : function(aByteArray) { ");
+        final BytecodeMethodSignature theStringConstructorSignature = new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID,
+                new BytecodeTypeRef[]{new BytecodeArrayTypeRef(BytecodePrimitiveTypeRef.CHAR, 1)});
 
-        BytecodeObjectTypeRef theStringTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(TString.class);
-        BytecodeObjectTypeRef theArrayTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(TArray.class);
-
-        BytecodeMethodSignature theStringConstructorSignature = new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID,
-                new BytecodeTypeRef[]{new BytecodeArrayTypeRef(BytecodePrimitiveTypeRef.BYTE, 1)});
+        final BytecodeLinkedClass theStringClass = aLinkerContext.resolveClass(theStringTypeRef);
 
         // Construct a String
-        theWriter.println("          var theNewString = new " + JSWriterUtils.toClassName(theStringTypeRef) + ".Create();");
-        theWriter.println("          var theBytes = new " + JSWriterUtils.toClassName(theArrayTypeRef) + ".Create();");
-        theWriter.println("          theBytes.data = aByteArray;");
-        theWriter.println("          " + JSWriterUtils.toClassName(theStringTypeRef) + "." + JSWriterUtils.toMethodName("init", theStringConstructorSignature) + "(theNewString, theBytes);");
-        theWriter.println("          return theNewString;");
-        theWriter.println("     },");
-        theWriter.println();
-        theWriter.println("     newMultiArray : function(aDimensions, aDefault) {");
-        theWriter.println("         var theLength = aDimensions[0];");
-        theWriter.println("         var theArray = bytecoder.newArray(theLength, aDefault);");
-        theWriter.println("         if (aDimensions.length > 1) {");
-        theWriter.println("             var theNewDimensions = aDimensions.slice(0);");
-        theWriter.println("             theNewDimensions.shift();");
-        theWriter.println("             for (var i=0;i<theLength;i++) {");
-        theWriter.println("                 theArray.data[i] = bytecoder.newMultiArray(theNewDimensions, aDefault);");
-        theWriter.println("             }");
-        theWriter.println("         }");
-        theWriter.println("         return theArray;");
-        theWriter.println("     },");
-        theWriter.println();
-        theWriter.println("     newArray : function(aLength, aDefault) {");
+        theWriter.tab().text("newString").colon().text("function(aCharArray)").space().text("{").newLine();
+        theWriter.tab(2).text("var theBytes").assign().text(theMinifier.toClassName(theArrayTypeRef)).text(".").text(theMinifier.toSymbol("newInstance")).text("();").newLine();
+        theWriter.tab(2).text("theBytes.data").assign().text("aCharArray;").newLine();
+        theWriter.tab(2).text("return ").text(theMinifier.toClassName(theStringTypeRef)).text(".").text(theMinifier.toMethodName("$newInstance", theStringConstructorSignature)).text("(theBytes);").newLine();
+        theWriter.tab().text("},").newLine();
 
-        BytecodeObjectTypeRef theArrayType = BytecodeObjectTypeRef.fromRuntimeClass(TArray.class);
-        theWriter.println("          var theInstance = new " + JSWriterUtils.toClassName(theArrayType)+ ".Create();");
-        theWriter.println("          theInstance.data = [];");
-        theWriter.println("          theInstance.data.length = aLength;");
-        theWriter.println("          for (var i=0;i<aLength;i++) {");
-        theWriter.println("             theInstance.data[i] = aDefault;");
-        theWriter.println("          }");
-        theWriter.println("          return theInstance;");
-        theWriter.println("     },");
+        theWriter.tab().text("newMultiArray").colon().text("function(aDimensions,aDefault)").space().text("{").newLine();
+        theWriter.tab(2).text("var theLength").assign().text("aDimensions[0];").newLine();
+        theWriter.tab(2).text("var theArray").assign().text("bytecoder.newArray(theLength,aDefault);").newLine();
+        theWriter.tab(2).text("if").space().text("(aDimensions.length").space().text(">").space().text("1)").space().text("{").newLine();
+        theWriter.tab(3).text("var theNewDimensions").assign().text("aDimensions.slice(0);").newLine();
+        theWriter.tab(3).text("theNewDimensions.shift();").newLine();
+        theWriter.tab(3).text("for").space().text("(var i=0;i<theLength;i++)").space().text("{").newLine();
+        theWriter.tab(4).text("theArray.data[i]").assign().text("bytecoder.newMultiArray(theNewDimensions,aDefault);").newLine();
+        theWriter.tab(3).text("}").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("return theArray;").newLine();
+        theWriter.tab().text("},").newLine();
 
-        theWriter.println();
-        theWriter.println("     dynamicType : function(aFunction) { ");
-        theWriter.println("         return new Proxy({}, {");
-        theWriter.println("             get: function(target, name) {");
-        theWriter.println("                 return function(inst, _p1, _p2, _p3, _p4, _p5, _p6, _p7, _p8, _p9) {");
-        theWriter.println("                    return aFunction(_p1, _p2, _p3, _p4, _p5, _p6, _p7, _p8, _p9);");
-        theWriter.println("                 }");
-        theWriter.println("             }");
-        theWriter.println("         });");
-        theWriter.println("     }, ");
-        theWriter.println();
+        final BytecodeObjectTypeRef theArrayType = BytecodeObjectTypeRef.fromRuntimeClass(Array.class);
+        theWriter.tab().text("newArray").colon().text("function(aLength,aDefault)").space().text("{").newLine();
+        theWriter.tab(2).text("var theInstance").assign().text(theMinifier.toClassName(theArrayType)).text(".").text(theMinifier.toSymbol("newInstance")).text("();").newLine();
+        theWriter.tab(2).text("theInstance.data").assign().text("[];").newLine();
+        theWriter.tab(2).text("theInstance.data.length").assign().text("aLength;").newLine();
+        theWriter.tab(2).text("for").space().text("(var i=0;i<aLength;i++)").space().text("{").newLine();
+        theWriter.tab(3).text("theInstance.data[i]").assign().text("aDefault;").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("return theInstance;").newLine();
+        theWriter.tab().text("},").newLine();
 
-        theWriter.println("     resolveStaticCallSiteObject: function(aWhere, aKey, aProducerFunction) {");
-        theWriter.println("         var resolvedCallsiteObject = aWhere.__staticCallSites[aKey];");
-        theWriter.println("         if (resolvedCallsiteObject == null) {");
-        theWriter.println("             resolvedCallsiteObject = aProducerFunction();");
-        theWriter.println("             aWhere.__staticCallSites[aKey] = resolvedCallsiteObject;");
-        theWriter.println("         }");
-        theWriter.println("         return resolvedCallsiteObject;");
-        theWriter.println("     },");
-        theWriter.println();
+        theWriter.tab().text("toBytecoderString").colon().text("function(aJSString)").space().text("{").newLine();
+        theWriter.tab(2).text("var theLength").assign().text("aJSString.length;").newLine();
+        theWriter.tab(2).text("var theArray").assign().text("[];").newLine();
+        theWriter.tab(2).text("for").space ().text("(var i=0;i<theLength;i++)").space().text("{").newLine();
+        theWriter.tab(3).text("theArray.push(aJSString.charCodeAt(i));").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("return bytecoder.newString(theArray);").newLine();
+        theWriter.tab().text("},").newLine();
 
-        theWriter.println("     imports : [],");
-        theWriter.println();
+        theWriter.tab().text("toJSString").colon().text("function(aBytecoderString)").space().text("{").newLine();
+        theWriter.tab(2).text("if").space().text("(aBytecoderString").space().text("==").space().text("null)").space().text("{").newLine();
+        theWriter.tab(3).text("return 'NULL';").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("if").space().text("(typeof(aBytecoderString)").space().text("===").space().text("'string')").space().text("{").newLine();
+        theWriter.tab(3).text("return aBytecoderString;").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("var theArray").assign().text("aBytecoderString.").text(theMinifier.toSymbol("data")).text(".data").text(";").newLine();
+        theWriter.tab(2).text("var theResult = '';").newLine();
+        theWriter.tab(2).text("for").space().text("(var i=0;i<theArray.length;i++)").space().text("{").newLine();
+        theWriter.tab(3).text("theResult+=String.fromCharCode(theArray[i]);").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("return theResult;").newLine();
+        theWriter.tab().text("},").newLine();
 
-        theWriter.println("     bootstrap : function() {");
-        aLinkerContext.linkedClasses().forEach(aEntry -> {
-            if (!aEntry.targetNode().getBytecodeClass().getAccessFlags().isInterface()) {
-                theWriter.print("          ");
-                theWriter.print(JSWriterUtils.toClassName(aEntry.edgeType().objectTypeRef()));
-                theWriter.println(".classInitCheck();");
+        theWriter.tab().text("methodType").colon().text("function(ret,args)").space().text("{").newLine();
+        theWriter.tab(2).text("return {returntype: ret, arguments:args};").newLine();
+        theWriter.tab().text("},").newLine();
+
+        theWriter.tab().text("dynamicType").colon().text("function(aFunction,staticArguments,name,typeToConstruct)").space().text("{").newLine();
+
+        theWriter.tab(2).text("if").space().text("(aFunction.static)").space().text("{").newLine();
+
+        theWriter.tab(3).text("var handler").assign().text("function()").space().text("{").newLine();
+        theWriter.tab(4).text("var args").assign().text("Array.prototype.slice.call(arguments);").newLine();
+        theWriter.tab(5).text("var concated").assign().text("staticArguments.data.concat(args);").newLine();
+        theWriter.tab(5).text("return aFunction.apply(this,concated);").newLine();
+        theWriter.tab(3).text("};").newLine();
+        theWriter.tab(3).text("return typeToConstruct.returntype.").text(theMinifier.toSymbol("newLambdaInstance")).text("(handler);").newLine();
+
+        theWriter.tab(2).text("}").newLine();
+
+        theWriter.tab(2).text("var handler").assign().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("var args").assign().text("Array.prototype.slice.call(arguments);").newLine();
+        theWriter.tab(3).text("var concated").assign().text("staticArguments.data.splice(1).concat(args);").newLine();
+        theWriter.tab(3).text("return aFunction.apply(staticArguments.data[0],concated);").newLine();
+        theWriter.tab(2).text("};").newLine();
+        theWriter.tab(2).text("return typeToConstruct.returntype.").text(theMinifier.toSymbol("newLambdaInstance")).text("(handler);").newLine();
+        theWriter.tab().text("},").newLine();
+
+        theWriter.tab().text("resolveStaticCallSiteObject").colon().text("function(aWhere,aKey,aProducerFunction)").space().text("{").newLine();
+        theWriter.tab(2).text("var resolvedCallsiteObject").assign().text("aWhere.").text(theMinifier.toSymbol("__staticCallSites")).text("[aKey];").newLine();
+        theWriter.tab(2).text("if").space().text("(resolvedCallsiteObject").space().text("==").space().text("null)").space().text("{").newLine();
+        theWriter.tab(3).text("resolvedCallsiteObject").assign().text("aProducerFunction();").newLine();
+        theWriter.tab(3).text("aWhere.").text(theMinifier.toSymbol("__staticCallSites")).text("[aKey]").assign().text("resolvedCallsiteObject;").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("return resolvedCallsiteObject;").newLine();
+        theWriter.tab().text("},").newLine();
+
+        theWriter.tab().text("imports").colon().text("{").newLine();
+        theWriter.tab(2).text("stringutf16").colon().text("{").newLine();
+        theWriter.tab(3).text("isBigEndian").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(4).text("return 1;").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("},").newLine();
+
+        theWriter.tab(2).text("system").colon().text("{").newLine();
+        theWriter.tab(3).text("currentTimeMillis").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(4).text("return Date.now();").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("nanoTime").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(4).text("return Date.now() * 1000000;").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("writeCharArrayToConsole").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("bytecoder.logCharArrayAsString(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("printstream").colon().text("{").newLine();
+        theWriter.tab(3).text("logDebug").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("bytecoder.logDebug(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("opaquearrays").colon().text("{").newLine();
+        theWriter.tab(3).text("createIntArrayINT").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return new Int32Array(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("createFloatArrayINT").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return new Float32Array(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("createObjectArray").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(4).text("return [];").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("createInt8ArrayINT").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return new Int8Array(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("math").colon().text("{").newLine();
+        theWriter.tab(3).text("ceilDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.ceil(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("floorDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.floor(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("sinDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.sin(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("cosDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.cos(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("sqrtDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.sqrt(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("roundDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.round(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("NaN").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return NaN;").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("atan2DOUBLEDOUBLE").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.atan2(p1,p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("maxLONGLONG").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.max(p1, p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("maxINTINT").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.max(p1,p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("maxDOUBLEDOUBLE").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.max(p1,p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("random").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.random();").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("tanDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.tan(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("toRadiansDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return p1*(Math.PI/180);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("toDegreesDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return p1*(180/Math.PI);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("minINTINT").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.min(p1,p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("minFLOATFLOAT").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.min(p1,p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("minLONGLONG").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.min(p1,p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("minDOUBLEDOUBLE").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.min(p1,p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("add").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return p1+p2;").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("random").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.random();").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("logDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.log(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("strictmath").colon().text("{").newLine();
+        theWriter.tab(3).text("sinDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.sin(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("cosDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.cos(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("ceilDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.ceil(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("floorDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.floor(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("sqrtDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.sqrt(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("roundDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.round(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("atan2DOUBLEDOUBLE").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.atan2(p1,p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("runtime").space().text(":").text("{").newLine();
+        theWriter.tab(3).text("nativewindow").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(4).text("return window;").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("nativeconsole").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(4).text("return console;").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+        theWriter.tab(1).text("},").newLine();
+
+        theWriter.tab().text("exports").colon().text("{},").newLine();
+
+        theWriter.tab().text("stringpool").colon().text("[],").newLine();
+
+        theWriter.tab().text("memory").colon().text("[],").newLine();
+
+        theWriter.text("};").newLine();
+
+        final String theGetNameMethodName = theMinifier.toMethodName("getName", new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(String.class), new BytecodeTypeRef[0]));
+
+        final ConstantPool thePool = new ConstantPool();
+
+        final BytecodeClassTopologicOrder theOrderedClasses = new BytecodeClassTopologicOrder(aLinkerContext);
+
+        theOrderedClasses.getClassesInOrder().stream().forEach(theEntry -> {
+
+            final BytecodeLinkedClass theLinkedClass = theEntry;
+            final BytecodeResolvedMethods theMethods = theLinkedClass.resolvedMethods();
+
+            final String theJSClassName = theMinifier.toClassName(theEntry.getClassName());
+            theWriter.text("var ").text(theJSClassName).assign().text("function()").space().text("{").newLine();
+
+            // Constructor function
+            theWriter.tab().text("var C").assign().text("function()").space().text("{").newLine();
+            theWriter.tab().text("};").newLine();
+
+            if (!theLinkedClass.getClassName().name().equals(Object.class.getName())) {
+                theWriter.tab().text("C.prototype").assign().text("Object.create(").text(theMinifier.toClassName(theLinkedClass.getSuperClass().getClassName())).text(".prototype);").newLine();
+            } else {
+                theWriter.tab().text("C.prototype").assign().text("Object.create(null);").newLine();
             }
-        });
-        theWriter.println("     }");
-        theWriter.println("};");
-        theWriter.println();
 
-        aLinkerContext.linkedClasses().forEach(theEntry -> {
+            // Framework-Specific methods
+            theWriter.tab().text("var ").text(theMinifier.toSymbol("$INITIALIZED")).assign().text("false;").newLine();
 
-            String theJSClassName = JSWriterUtils.toClassName(theEntry.edgeType().objectTypeRef());
-            theWriter.println("var " + theJSClassName + " = {");
-
-            // First of all, we add static fields required by the framework
-            theWriter.println("    __name : '" + theEntry.edgeType().objectTypeRef().name() + "',");
-            theWriter.println("    __initialized : false,");
-            theWriter.println("    __staticCallSites : [],");
-            theWriter.print("    __typeId : ");
-            theWriter.print(theEntry.targetNode().getUniqueId());
-            theWriter.println(",");
-            theWriter.print("    __implementedTypes : [");
-            {
+            if (!theLinkedClass.getBytecodeClass().getAccessFlags().isInterface()) {
+                theWriter.tab().text("var ").text(theMinifier.toSymbol("__implementedTypes")).assign().text("[");
                 boolean first = true;
-                for (BytecodeLinkedClass theType : theEntry.targetNode().getImplementingTypes()) {
+                for (final BytecodeLinkedClass theType : theLinkedClass.getImplementingTypes()) {
                     if (!first) {
                         theWriter.print(",");
                     }
                     first = false;
-                    theWriter.print(theType.getUniqueId());
+                    if (theType.getUniqueId() == theLinkedClass.getUniqueId()) {
+                        theWriter.print("C");
+                    } else {
+                        theWriter.print(theMinifier.toClassName(theType.getClassName()));
+                    }
                 }
+                theWriter.text("];").newLine();
             }
-            theWriter.println("],");
+            theWriter.tab().text("C.").text(theMinifier.toSymbol("__staticCallSites")).assign().text("[];").newLine();
+
+            // Init function
+            theWriter.tab().text("C.").text(theMinifier.toSymbol("init")).assign().text("function()").space().text("{").newLine();
+            theWriter.tab(2).text("if").space().text("(!").text(theMinifier.toSymbol("$INITIALIZED")).text(")").space().text("{").newLine();
+            theWriter.tab(3).text(theMinifier.toSymbol("$INITIALIZED")).assign().text("true;").newLine();
+
+            // Constructors
+            theMethods.stream().forEach(aEntry -> {
+                final BytecodeMethod theMethod = aEntry.getValue();
+                if (theMethod.isConstructor() && aEntry.getProvidingClass() == theLinkedClass) {
+
+                    final StringBuilder theSignature = new StringBuilder();
+                    for (int i=0;i<theMethod.getSignature().getArguments().length;i++) {
+                        if (i>0) {
+                            theSignature.append(",");
+                        }
+                        theSignature.append("p");
+                        theSignature.append(i);
+                    }
+
+                    theWriter.tab(3).text("C.").text(theMinifier.toMethodName("$newInstance", theMethod.getSignature())).assign().text("function(").text(theSignature.toString()).text(")").space().text("{").newLine();
+                    theWriter.tab(4).text("var ").text(theMinifier.toSymbol("instance")).assign().text("new C();").newLine();
+
+                    theWriter.tab(4).text(theMinifier.toSymbol("instance")).text(".").text("$").text(Integer.toString(theLinkedClass.getUniqueId())).text(theMinifier.toMethodName(theMethod.getName().stringValue(), theMethod.getSignature()))
+                            .text("(").text(theSignature.toString()).text(");").newLine();
+
+
+                    theWriter.tab(4).text("return ").text(theMinifier.toSymbol("instance")).text(";").newLine();
+                    theWriter.tab(3).text("};").newLine();
+                }
+            });
+
+            // NewInstance function
+            theWriter.tab(3).text("C.").text(theMinifier.toSymbol("newInstance")).assign().text("function()").space().text("{").newLine();
+            theWriter.tab(4).text("return new C();").newLine();
+            theWriter.tab(3).text("};").newLine();
+
+            theWriter.tab(3).text("C.").text(theMinifier.toSymbol("init")).assign().text("function()").space().text("{").newLine();
+            theWriter.tab(4).text("return C;").newLine();
+            theWriter.tab(3).text("};").newLine();
+
+            if (!theLinkedClass.getClassName().name().equals(Object.class.getName())) {
+                final BytecodeLinkedClass theSuper = theLinkedClass.getSuperClass();
+                final String theSuperJSName = theMinifier.toClassName(theSuper.getClassName());
+
+                theWriter.tab(3).text(theSuperJSName).text(".").text(theMinifier.toSymbol("init")).text("();").newLine();
+            }
+
+            if (theLinkedClass.hasClassInitializer()) {
+                theWriter.tab(3).text(theJSClassName).text(".").text(theMinifier.toMethodName("clinit", new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[0]))).text("();").newLine();
+            }
+
+            theWriter.tab().tab().text("}").newLine();
+            theWriter.tab().tab().text("return C;").newLine();
+            theWriter.tab().text("};").newLine();
+
+            // NewInstance function
+            theWriter.tab().text("C.").text(theMinifier.toSymbol("newInstance")).assign().text("function()").space().text("{").newLine();
+            theWriter.tab(2).text("C.").text(theMinifier.toSymbol("init")).text("();").newLine();
+            theWriter.tab(2).text("return new C();").newLine();
+            theWriter.tab().text("};").newLine();
+            theWriter.tab().text("C.prototype.constructor").assign().text("C").space().text(";").newLine();
+
+            // Constructors
+            theMethods.stream().forEach(aEntry -> {
+
+                final BytecodeMethod theMethod = aEntry.getValue();
+
+                if (theMethod.isConstructor() && aEntry.getProvidingClass() == theLinkedClass) {
+
+                    final StringBuilder theSignature = new StringBuilder();
+                    for (int i=0;i<theMethod.getSignature().getArguments().length;i++) {
+                        if (i>0) {
+                            theSignature.append(",");
+                        }
+                        theSignature.append("p");
+                        theSignature.append(i);
+                    }
+                    theWriter.tab().text("C.").text(theMinifier.toMethodName("$newInstance", theMethod.getSignature())).assign().text("function(").text(theSignature.toString()).text(")").space().text("{").newLine();
+                    theWriter.tab(2).text("C.").text(theMinifier.toSymbol("init")).text("();").newLine();
+                    theWriter.tab(2).text("var ").text(theMinifier.toSymbol("instance")).assign().text("new C();").newLine();
+
+                    theWriter.tab(2).text(theMinifier.toSymbol("instance")).text(".").text("$").text(Integer.toString(theLinkedClass.getUniqueId())).text(theMinifier.toMethodName(theMethod.getName().stringValue(), theMethod.getSignature()))
+                            .text("(").text(theSignature.toString()).text(");").newLine();
+
+
+                    theWriter.tab(2).text("return ").text(theMinifier.toSymbol("instance")).text(";").newLine();
+                    theWriter.tab().text("};").newLine();
+                }
+
+            });
+
+            // NewLambdaInstance function
+            if (theLinkedClass.getBytecodeClass().getAccessFlags().isInterface()) {
+                theWriter.tab().text("C.").text(theMinifier.toSymbol("newLambdaInstance")).assign().text("function(impl)").space().text("{").newLine();
+                theWriter.tab(2).text("var l").assign().text("C.").text(theMinifier.toSymbol("newInstance")).text("();").newLine();
+                for (final BytecodeMethod theMethod : theLinkedClass.getBytecodeClass().getMethods()) {
+                    if (!theMethod.isConstructor() && !theMethod.isClassInitializer()) {
+                        theWriter.tab(2).text("l.").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theMethod.getSignature())).assign().text("impl.bind(l);").newLine();
+                    }
+                }
+                theWriter.tab(2).text("return l;").newLine();
+
+                theWriter.tab().text("};").newLine();
+            }
 
             // then we add class specific static fields
-            BytecodeResolvedFields theStaticFields = theEntry.targetNode().resolvedFields();
+            final BytecodeResolvedFields theStaticFields = theLinkedClass.resolvedFields();
             theStaticFields.streamForStaticFields().forEach(
-                    aFieldEntry -> theWriter.println("    " + aFieldEntry.getValue().getName().stringValue() + " : null, // declared in " + aFieldEntry.getProvidingClass().getClassName().name()));
-            theWriter.println();
+                    aFieldEntry -> {
+                        if (!"$assertionsDisabled".equals(aFieldEntry.getValue().getName().stringValue())) {
+                            final BytecodeTypeRef theFieldType = aFieldEntry.getValue().getTypeRef();
+                            if (theFieldType.isPrimitive()) {
+                                final BytecodePrimitiveTypeRef thePrimitive = (BytecodePrimitiveTypeRef) theFieldType;
+                                if (thePrimitive == BytecodePrimitiveTypeRef.BOOLEAN) {
+                                    theWriter.tab().text("C.").symbol(aFieldEntry.getValue().getName().stringValue(), null).assign().text("false;").newLine();
+                                } else {
+                                    theWriter.tab().text("C.").symbol(aFieldEntry.getValue().getName().stringValue(), null).assign().text("0;").newLine();
+                                }
+                            } else {
+                                theWriter.tab().text("C.").symbol(aFieldEntry.getValue().getName().stringValue(), null).assign().text("null;").newLine();
+                            }
+                        }
+                    });
 
-            if (!theEntry.targetNode().getBytecodeClass().getAccessFlags().isAbstract()) {
+            if (!theLinkedClass.getBytecodeClass().getAccessFlags().isAbstract()) {
                 // The Constructor function initializes all object members with null
                 // Only non abstract classes can be instantiated
-                BytecodeResolvedFields theInstanceFields = theEntry.targetNode().resolvedFields();
-                theWriter.println("    Create : function() {");
+                final BytecodeResolvedFields theInstanceFields = theLinkedClass.resolvedFields();
                 theInstanceFields.streamForInstanceFields().forEach(
-                        aFieldEntry -> theWriter.println("        this." + aFieldEntry.getValue().getName().stringValue() + " = null; // declared in " + aFieldEntry.getProvidingClass().getClassName().name()));
-                theWriter.println("    },");
-                theWriter.println();
+                        aFieldEntry -> {
+                            final BytecodeTypeRef theFieldType = aFieldEntry.getValue().getTypeRef();
+                            if (theFieldType.isPrimitive()) {
+                                final BytecodePrimitiveTypeRef thePrimitive = (BytecodePrimitiveTypeRef) theFieldType;
+                                if (thePrimitive == BytecodePrimitiveTypeRef.BOOLEAN) {
+                                    theWriter.tab().text("C.prototype.").text(theMinifier.toSymbol(aFieldEntry.getValue().getName().stringValue())).assign().text("false;").newLine();
+                                } else {
+                                    theWriter.tab().text("C.prototype.").text(theMinifier.toSymbol(aFieldEntry.getValue().getName().stringValue())).assign().text("0;").newLine();
+                                }
+                            } else {
+                                theWriter.tab().text("C.prototype.").text(theMinifier.toSymbol(aFieldEntry.getValue().getName().stringValue())).assign().text("null;").newLine();
+                            }
+                        });
             }
 
-            theWriter.println("    instanceOf : function(aType) {");
-            theWriter.println("        return " + theJSClassName + ".__implementedTypes.includes(aType.__typeId);");
-            theWriter.println("    },");
-            theWriter.println();
+            if (!theLinkedClass.getBytecodeClass().getAccessFlags().isInterface()) {
+                theWriter.tab().text("C.prototype.").text("iof").assign().text("function(aType)").space().text("{").newLine();
+                theWriter.tab(2).text("return ").text(theMinifier.toSymbol("__implementedTypes")).text(".includes(aType);").newLine();
+                theWriter.tab().text("};").newLine();
 
-            theWriter.println("    TClassgetClass : function() {");
-            theWriter.println("        return " + theJSClassName + ";");
-            theWriter.println("    },");
-            theWriter.println();
-
-            theWriter.println("    BOOLEANdesiredAssertionStatus : function() {");
-            theWriter.println("        return false;");
-            theWriter.println("    },");
-            theWriter.println();
-
-            theWriter.println("    A1TObjectgetEnumConstants : function(aClazz) {");
-            theWriter.println("        return aClazz.$VALUES;");
-            theWriter.println("    },");
-
-            Set<BytecodeObjectTypeRef> theStaticReferences = new HashSet<>();
-
-            BytecodeResolvedMethods theMethods = theEntry.targetNode().resolvedMethods();
+                theWriter.tab().text("C.").text(theGetNameMethodName).assign().text("function()").space().text("{").newLine();
+                if (!theLinkedClass.getClassName().name().equals("java.lang.Class")) {
+                    theWriter.tab(2).text("return bytecoder.stringpool[").text("" + thePool.register(new StringValue(ConstantPool.simpleClassName(theLinkedClass.getClassName().name())))).text("];").newLine();
+                } else {
+                    theWriter.tab(2).text("return this.").text(theGetNameMethodName).text("();").newLine();
+                }
+                theWriter.tab().text("};").newLine();
+            }
 
             theMethods.stream().forEach(aEntry -> {
-                BytecodeMethod theMethod = aEntry.getValue();
+                final BytecodeMethod theMethod = aEntry.getValue();
+                final BytecodeMethodSignature theCurrentMethodSignature = theMethod.getSignature();
+
+                // If the method is provided by the runtime, we do not need to generate the implementation
+                if (null != theMethod.getAttributes().getAnnotationByType(EmulatedByRuntime.class.getName())) {
+                    return;
+                }
 
                 // Do not generate code for abstract methods
                 if (theMethod.getAccessFlags().isAbstract()) {
                     return;
                 }
 
-                if (!(aEntry.getProvidingClass() == theEntry.targetNode())) {
+                if (!(aEntry.getProvidingClass() == theLinkedClass)) {
                     // Skip methods not implemented in this class
+                    // But include static methods, as they are inherited from the base classes
+                    if (aEntry.getValue().getAccessFlags().isStatic() && !aEntry.getValue().isClassInitializer()) {
+
+                        // Static methods will just delegate to the implementation in the class
+                        theWriter.tab().text("C.").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature)).assign()
+                            .text(theMinifier.toClassName(aEntry.getProvidingClass().getClassName())).text(".").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature)).text(";").newLine();
+                    }
+                    if (aEntry.getProvidingClass().getBytecodeClass().getAccessFlags().isInterface()) {
+                        // Default method inherited from interface
+                        // Static methods will just delegate to the implementation in the class
+                        theWriter.tab().text("C.prototype.").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature)).assign()
+                                .text(theMinifier.toClassName(aEntry.getProvidingClass().getClassName())).text(".prototype.").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature)).text(";").newLine();
+                    }
                     return;
                 }
 
-                aLinkerContext.getLogger().info("Compiling {}", theEntry.targetNode().getClassName().name()  + "." + theMethod.getName().stringValue());
+                aLinkerContext.getLogger().info("Compiling {}.{}", theLinkedClass.getClassName().name(), theMethod.getName().stringValue());
 
-                ProgramGenerator theGenerator = programGeneratorFactory.createFor(aLinkerContext);
-                Program theSSAProgram = theGenerator.generateFrom(aEntry.getProvidingClass().getBytecodeClass(), theMethod);
+                final ProgramGenerator theGenerator = programGeneratorFactory.createFor(aLinkerContext, new JSIntrinsics());
+                final Program theSSAProgram = theGenerator.generateFrom(aEntry.getProvidingClass().getBytecodeClass(), theMethod);
 
                 //Run optimizer
-                aOptions.getOptimizer().optimize(theSSAProgram.getControlFlowGraph(), aLinkerContext);
+                if (!theMethod.getAccessFlags().isAbstract() && !theMethod.getAccessFlags().isNative()) {
+                    aOptions.getOptimizer().optimize(theSSAProgram.getControlFlowGraph(), aLinkerContext);
+                }
 
-                BytecodeMethodSignature theCurrentMethodSignature = theMethod.getSignature();
-                StringBuilder theArguments = new StringBuilder();
-                for (Program.Argument theArgument : theSSAProgram.getArguments()) {
-                    if (theArguments.length() > 0) {
-                        theArguments.append(",");
+                final StringBuilder theArguments = new StringBuilder();
+                boolean first = true;
+                for (final Variable theVariable : theSSAProgram.getArguments()) {
+                    if (!Variable.THISREF_NAME.equals(theVariable.getName())) {
+                        if (!first) {
+                            theArguments.append(',');
+                        }
+                        theArguments.append(theMinifier.toVariableName(theVariable.getName()));
+                        first = false;
                     }
-                    theArguments.append(theArgument.getVariable().getName());
                 }
 
                 if (theMethod.getAccessFlags().isNative()) {
-                    if (theEntry.targetNode().getBytecodeClass().getAttributes().getAnnotationByType(EmulatedByRuntime.class.getName()) != null) {
+                    if (null != theLinkedClass.getBytecodeClass().getAttributes()
+                            .getAnnotationByType(EmulatedByRuntime.class.getName())) {
                         return;
                     }
 
-                    BytecodeImportedLink theLink = theEntry.targetNode().linkfor(theMethod);
+                    final BytecodeImportedLink theLink = theLinkedClass.linkfor(theMethod);
 
-                    theWriter.println();
-                    theWriter.println("    " + JSWriterUtils.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature) + " : function(" + theArguments
-                            + ") {");
+                    if (theMethod.getAccessFlags().isStatic()) {
+                        theWriter.tab().text("C.");
+                    } else {
+                        theWriter.tab().text("C.prototype.");
+                    }
+                    theWriter.text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature))
+                            .assign().text("function(").text(theArguments.toString()).text(")").space().text("{").newLine();
 
-                    theWriter.print("         return bytecoder.imports.");
-                    theWriter.print(theLink.getModuleName());
-                    theWriter.print(".");
-                    theWriter.print(theLink.getLinkName());
-                    theWriter.print("(");
-                    theWriter.print(theArguments);
-                    theWriter.println(");");
-
-                    theWriter.println("    },");
+                    theWriter.tab(2).text("return bytecoder.imports.").text(theLink.getModuleName()).text(".").text(theLink.getLinkName()).text("(").text(theArguments.toString()).text(");").newLine();
+                    theWriter.tab().text("};").newLine();
                     return;
                 }
 
-                theWriter.println();
-                theWriter.println("    " + JSWriterUtils.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature) + " : function(" + theArguments
-                        + ") {");
-
-                aOptions.getLogger().info("Compiling " + theEntry.targetNode().getClassName().name() + "." + theMethod.getName().stringValue());
-
-                theStaticReferences.addAll(theSSAProgram.getStaticReferences());
+                theWriter.assignSymbolToSourceFile(theLinkedClass.getClassName().name() + "." + theMethod.getName().stringValue(), theSSAProgram.getDebugInformation().debugPositionFor(
+                        BytecodeOpcodeAddress.START_AT_ZERO));
+                if (theMethod.getAccessFlags().isStatic()) {
+                    theWriter.tab().text("C.").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature))
+                            .assign().text("function(").text(theArguments.toString()).text(")").space().text("{").newLine();
+                } else if (theMethod.isConstructor()) {
+                    theWriter.tab().text("C.prototype.").text("$").text(Integer.toString(theLinkedClass.getUniqueId())).text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature))
+                            .assign().text("function(").text(theArguments.toString()).text(")").space().text("{").newLine();
+                } else {
+                    theWriter.tab().text("C.prototype.").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature))
+                            .assign().text("function(").text(theArguments.toString()).text(")").space().text("{").newLine();
+                }
 
                 if (aOptions.isDebugOutput()) {
-                    theWriter.println("        /**");
-                    theWriter.println("        " + theSSAProgram.getControlFlowGraph().toDOT());
-                    theWriter.println("        */");
+                    theWriter.tab(2).text("/**").newLine();
+                    //theWriter.tab(2).text(theSSAProgram.getControlFlowGraph().toDOT()).newLine();
+                    theWriter.tab(2).text("**/").newLine();
                 }
 
-                JSSSAWriter theVariablesWriter = new JSSSAWriter(aOptions, theSSAProgram, "        ", theWriter, aLinkerContext);
-                for (Variable theVariable : theSSAProgram.globalVariables()) {
-                    if (!theVariable.isSynthetic()) {
-                        theVariablesWriter.print("var ");
-                        theVariablesWriter.print(theVariable.getName());
-                        theVariablesWriter.print(" = null;");
-                        theVariablesWriter.print(" // type is ");
-                        theVariablesWriter.print(theVariable.resolveType().resolve().name());
-                        theVariablesWriter.print(" # of inits = " + theVariable.incomingDataFlows().size());
-                        theVariablesWriter.println();
-                    }
-                }
+                theWriter.flush();
 
-                // Try to reloop it!
+                // Perform register allocation
+                final AbstractAllocator theAllocator = aOptions.getAllocator().allocate(theSSAProgram, t -> t.resolveType(), aLinkerContext);
+
+                final JSSSAWriter theVariablesWriter = new JSSSAWriter(aOptions, theSSAProgram, 2, theWriter, aLinkerContext, thePool, false, theMinifier, theAllocator);
+                theVariablesWriter.printRegisterDeclarations();
+
+                // Try to reloop it or stackify it!
                 try {
-                    Relooper theRelooper = new Relooper();
-                    Relooper.Block theReloopedBlock = theRelooper.reloop(theSSAProgram.getControlFlowGraph());
+                    if (aOptions.isPreferStackifier()) {
+                        try {
+                            final Stackifier stackifier = new Stackifier(theSSAProgram.getControlFlowGraph());
+                            theVariablesWriter.printStackified(stackifier);
 
-                    theVariablesWriter.printRelooped(theReloopedBlock);
-                } catch (Exception e) {
-                    System.out.println(theSSAProgram.getControlFlowGraph().toDOT());
-                    throw new IllegalStateException("Error relooping cfg for " + theEntry.targetNode().getClassName().name() + "." + theMethod.getName().stringValue(), e);
+                            aOptions.getLogger().debug("Method {}.{} successfully stackified ", theLinkedClass.getClassName().name(), theMethod.getName().stringValue());
+
+                        } catch (final HeadToHeadControlFlowException e) {
+
+                            // Stackifier has problems, we fallback to relooper instead
+                            aOptions.getLogger().warn("Method {}.{} could not be stackified, using Relooper instead", theLinkedClass.getClassName().name(), theMethod.getName().stringValue());
+
+                            final Relooper theRelooper = new Relooper(aOptions);
+                            final Relooper.Block theReloopedBlock = theRelooper.reloop(theSSAProgram.getControlFlowGraph());
+
+                            theVariablesWriter.printRelooped(theReloopedBlock);
+                        }
+                    } else {
+
+                        final Relooper theRelooper = new Relooper(aOptions);
+                        final Relooper.Block theReloopedBlock = theRelooper.reloop(theSSAProgram.getControlFlowGraph());
+
+                        theVariablesWriter.printRelooped(theReloopedBlock);
+                    }
+                } catch (final Exception e) {
+                    throw new IllegalStateException("General error while processing " + theLinkedClass.getClassName().name() + '.'
+                            + theMethod.getName().stringValue(), e);
                 }
 
-                theWriter.println("    },");
+                theWriter.tab().text("};").newLine();
+
+                if (theMethod.isConstructor() || theMethod.getAccessFlags().isStatic()) {
+                    if (theMethod.getAccessFlags().isStatic()) {
+                        theWriter.tab().text("C.").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature)).text(".static").assign().text("true;").newLine();
+                    }
+                } else {
+                    theWriter.tab().text("C.").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature))
+                        .assign().text("C.prototype.").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature)).text(";").newLine();
+                }
+
             });
 
+            theWriter.tab().text("return C;").newLine();
 
-            theWriter.println();
-            theWriter.println("    classInitCheck : function() {");
-            theWriter.println("        if (!" + theJSClassName + ".__initialized) {");
-            theWriter.println("            " + theJSClassName + ".__initialized = true;");
-
-            if (!theEntry.targetNode().getBytecodeClass().getAccessFlags().isAbstract()) {
-                // Now we have to setup the prototype
-                // Only in case this class can be instantiated of course
-                theWriter.println("            var thePrototype = " + theJSClassName + ".Create.prototype;");
-                theWriter.println("            thePrototype.instanceOf = " + theJSClassName + ".instanceOf;");
-                theWriter.println("            thePrototype.TClassgetClass = " + theJSClassName + ".TClassgetClass;");
-
-                theMethods.stream().forEach(aEntry -> {
-                    BytecodeMethod theMethod = aEntry.getValue();
-                    if (!theMethod.getAccessFlags().isStatic() &&
-                            !theMethod.getAccessFlags().isAbstract() &&
-                            !theMethod.isConstructor() &&
-                            !theMethod.isClassInitializer()) {
-                        String theMethodName = JSWriterUtils.toMethodName(theMethod.getName().stringValue(), theMethod.getSignature());
-                        theWriter.print("            thePrototype.");
-                        theWriter.print(theMethodName);
-                        theWriter.print(" = ");
-                        theWriter.print(WASMWriterUtils.toClassName(aEntry.getProvidingClass().getClassName()));
-                        theWriter.print(".");
-                        theWriter.print(theMethodName);
-                        theWriter.println(";");
-                    }
-                });
-            }
-
-            for (BytecodeObjectTypeRef theRef : theStaticReferences) {
-                if (!Objects.equals(theRef, theEntry.edgeType().objectTypeRef())) {
-                    theWriter.print("            ");
-                    theWriter.print(JSWriterUtils.toClassName(theRef));
-                    theWriter.println(".classInitCheck();");
-                }
-            }
-            if (theEntry.targetNode().hasClassInitializer()) {
-                theWriter.println("            " + theJSClassName + ".VOIDclinit();");
-            }
-            theWriter.println("        }");
-
-            theWriter.println("    },");
-            theWriter.println();
-
-            theWriter.println("};");
-            theWriter.println();
+            theWriter.text("}();").newLine();
         });
+
+        theWriter.text("bytecoder.bootstrap").assign().text("function()").space().text("{").newLine();
+        final List<StringValue> theValues = thePool.stringValues();
+        for (int i=0; i<theValues.size(); i++) {
+            final StringValue theValue = theValues.get(i);
+            theWriter.tab().text("bytecoder.stringpool[").text("" + i).text("]").assign().text("bytecoder.newString(").text(toArray(theValue.getStringValue())).text(");").newLine();
+        }
+
+        theOrderedClasses.getClassesInOrder().forEach(aEntry -> {
+            final BytecodeResolvedMethods theMethods = aEntry.resolvedMethods();
+            theMethods.stream().forEach(eMethod -> {
+                final BytecodeMethod theMethod = eMethod.getValue();
+                final BytecodeMethodSignature theCurrentMethodSignature = theMethod.getSignature();
+
+                // If the method is provided by the runtime, we do not need to generate the implementation
+                final BytecodeAnnotation theAnnotation = theMethod.getAttributes().getAnnotationByType(Export.class.getName());
+                if (theAnnotation != null) {
+                    theWriter.tab().text("bytecoder.exports.").text(theAnnotation.getElementValueByName("value").stringValue()).assign().text(theMinifier.toClassName(aEntry.getClassName())).text(".").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature)).text(";").newLine();
+                } else {
+                    // If the method is the main method and not exported by annotation, it is
+                    // exported by default name "main".
+                    if (aEntry.getClassName().name().equals(aEntryPointClass.getName()) && theMethod.getName().stringValue().equals(aEntryPointMethodName)) {
+                        theWriter.tab().text("bytecoder.exports.main").assign().text(theMinifier.toClassName(aEntry.getClassName())).text(".").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature)).text(";").newLine();
+                    }
+                }
+            });
+        });
+
+        theWriter.text("}").newLine();
 
         theWriter.flush();
 
-        return new JSCompileResult(theStrWriter.toString());
+        theStrWriter.append(System.lineSeparator()).append("//# sourceMappingURL=").append(aOptions.getFilenamePrefix()).append(".js.map");
+
+        return new JSCompileResult(theMinifier,
+                new JSCompileResult.JSContent(aOptions.getFilenamePrefix() + ".js", theStrWriter.toString()),
+                new JSCompileResult.JSContent(aOptions.getFilenamePrefix() + ".js.map", theSourceMapWriter.toSourceMap(aOptions.getFilenamePrefix() + ".js")));
     }
 
-    private void writeExceptionHandlerCode(BytecodeLinkerContext aLinkerContext, BytecodeLinkedClass aExceptionRethrower,
-            PrintWriter aWriter, BytecodeProgram aProgram,
-            String aInset, BytecodeInstruction aInstruction, String aExceptionVariableName) {
-        BytecodeExceptionTableEntry[] theActiveHandlers = aProgram.getActiveExceptionHandlers(aInstruction.getOpcodeAddress(), aProgram.getExceptionHandlers());
-        if (theActiveHandlers.length == 0) {
-            // Missing catch block
-            aWriter.println(aInset + JSWriterUtils.toClassName(aExceptionRethrower.getClassName()) + "." + JSWriterUtils.toMethodName("registerExceptionOutcome",
-                    registerExceptionOutcomeSignature) + "(" + aExceptionVariableName + ");");
-            aWriter.println(aInset + "return;");
-        } else {
-            for (BytecodeExceptionTableEntry theEntry : theActiveHandlers) {
-                if (!theEntry.isFinally()) {
-                    BytecodeClassinfoConstant theConstant = theEntry.getCatchType();
-                    BytecodeLinkedClass theLinkedClass = aLinkerContext.isLinkedOrNull(theConstant.getConstant());
-                    if (theLinkedClass != null) {
-                        aWriter.println(
-                                aInset + "if (" + aExceptionVariableName + ".clazz.instanceOfType(" + theLinkedClass.getUniqueId()
-                                        + ")) {");
-                        aWriter.println(aInset + "    currentLabel = " + theEntry.getHandlerPc().getAddress() + ";");
-                        aWriter.println(aInset + "    continue controlflowloop;");
-                        aWriter.println(aInset + "}");
-                    }
-                }
+    public String toArray(final String aData) {
+        final StringBuilder theResult = new StringBuilder("[");
+        for (int i=0;i<aData.length();i++) {
+            if (i>0) {
+                theResult.append(",");
             }
-            aWriter.println(aInset + JSWriterUtils.toClassName(aExceptionRethrower.getClassName()) + "." + JSWriterUtils.toMethodName("registerExceptionOutcome",
-                    registerExceptionOutcomeSignature) + "(" + aExceptionVariableName + ");");
-            aWriter.println(aInset + "return;");
+            theResult.append((int) aData.charAt(i));
         }
-    }
-
-    @Override
-    public String generatedFileName() {
-        return "bytecoder.js";
+        theResult.append("]");
+        return theResult.toString();
     }
 }

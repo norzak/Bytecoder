@@ -15,5 +15,11 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+
 public class UnreachableExpression extends Expression {
+
+    public UnreachableExpression(final Program aProgram, final BytecodeOpcodeAddress address) {
+        super(aProgram, address);
+    }
 }

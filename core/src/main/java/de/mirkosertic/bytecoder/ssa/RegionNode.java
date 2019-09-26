@@ -15,17 +15,78 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import de.mirkosertic.bytecoder.core.BytecodeExceptionTableEntry;
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+import de.mirkosertic.bytecoder.graph.Edge;
+import de.mirkosertic.bytecoder.graph.Node;
+
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
-import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
-import de.mirkosertic.bytecoder.graph.Node;
+public class RegionNode extends Node<RegionNode, ControlFlowEdgeType> {
 
-public class RegionNode extends Node {
+    public final static Comparator<RegionNode> NODE_COMPARATOR = Comparator.comparingInt(o -> o.getStartAddress().getAddress());
+
+    public static final Predicate<Edge> FORWARD_EDGE_FILTER_REGULAR_FLOW_ONLY = edge -> edge.edgeType() == ControlFlowEdgeType.forward &&
+            ((RegionNode) edge.targetNode()).getType() == BlockType.NORMAL;
+
+    public static class ExceptionHandler {
+
+        private final BytecodeOpcodeAddress startPc;
+        private final BytecodeOpcodeAddress endPC;
+        private final List<BytecodeExceptionTableEntry> catchEntries;
+
+        public ExceptionHandler(final BytecodeOpcodeAddress startPc, final BytecodeOpcodeAddress endPC) {
+            this.startPc = startPc;
+            this.endPC = endPC;
+            this.catchEntries = new ArrayList<>();
+        }
+
+        public void addCatchEntry(final BytecodeExceptionTableEntry aEntry) {
+            catchEntries.add(aEntry);
+        }
+
+        public boolean regionMatchesTo(final BytecodeExceptionTableEntry aEntry) {
+            return startPc.equals(aEntry.getStartPC()) && endPC.equals(aEntry.getEndPc());
+        }
+
+        public List<BytecodeExceptionTableEntry> getCatchEntries() {
+            return catchEntries;
+        }
+
+        public BytecodeOpcodeAddress getStartPc() {
+            return startPc;
+        }
+
+        public BytecodeOpcodeAddress getEndPC() {
+            return endPC;
+        }
+
+        public boolean sameCatchBlockAs(final ExceptionHandler aOther) {
+            if (catchEntries.size() != aOther.catchEntries.size()) {
+                return false;
+            }
+            for (final BytecodeExceptionTableEntry theCatch : catchEntries) {
+                boolean found = false;
+                for (final BytecodeExceptionTableEntry theOtherCatch : catchEntries) {
+                    if (theOtherCatch.getHandlerPc().getAddress() == theCatch.getHandlerPc().getAddress() &&
+                        theOtherCatch.getCatchTypeAsInt() == theCatch.getCatchTypeAsInt()) {
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
 
     public enum BlockType {
         NORMAL,
@@ -33,249 +94,153 @@ public class RegionNode extends Node {
         FINALLY,
     }
 
-    public enum EdgeType {
-        NORMAL, BACK
-    }
-
-    public static class Edge {
-
-        private EdgeType type;
-
-        public Edge(EdgeType aType) {
-            type = aType;
-        }
-
-        public void changeTo(EdgeType aType) {
-            type = aType;
-        }
-
-        public EdgeType getType() {
-            return type;
-        }
-    }
-
     private final BytecodeOpcodeAddress startAddress;
     private final Program program;
-    private final Map<Edge, RegionNode> successors;
     private final BlockType type;
-    private final Map<VariableDescription, Value> imported;
-    private final Map<VariableDescription, Value> exported;
-    private final List<GraphNodePath> reachableBy;
+    private final Map<VariableDescription, Value> liveIn;
+    private final Map<VariableDescription, Value> liveOut;
     private final ControlFlowGraph owningGraph;
     private final ExpressionList expressions;
+    private long startAnalysisTime;
+    private long finishedAnalysisTime;
 
-    protected RegionNode(ControlFlowGraph aOwningGraph, BlockType aType, Program aProgram, BytecodeOpcodeAddress aStartAddress) {
+    protected RegionNode(
+            final ControlFlowGraph aOwningGraph, final BlockType aType, final Program aProgram, final BytecodeOpcodeAddress aStartAddress) {
         type = aType;
         owningGraph = aOwningGraph;
         startAddress = aStartAddress;
         program = aProgram;
-        successors = new HashMap<>();
-        imported = new HashMap<>();
-        exported = new HashMap<>();
-        reachableBy = new ArrayList<>();
+        liveIn = new HashMap<>();
+        liveOut = new HashMap<>();
         expressions = new ExpressionList();
+    }
+
+    public long getStartAnalysisTime() {
+        return startAnalysisTime;
+    }
+
+    public void setStartAnalysisTime(final long startAnalysisTime) {
+        this.startAnalysisTime = startAnalysisTime;
+    }
+
+    public long getFinishedAnalysisTime() {
+        return finishedAnalysisTime;
+    }
+
+    public void setFinishedAnalysisTime(final long finishedAnalysisTime) {
+        this.finishedAnalysisTime = finishedAnalysisTime;
     }
 
     public ExpressionList getExpressions() {
          return expressions;
     }
 
-    public void addReachablePath(GraphNodePath aPath) {
-        reachableBy.add(aPath);
-    }
-
-    public List<GraphNodePath> reachableBy() {
-        return reachableBy;
-    }
-
     public BlockType getType() {
         return type;
     }
 
-    public List<RegionNode> getPredecessors() {
-        List<RegionNode> theResult = new ArrayList<>();
-        for (GraphNodePath thePath : reachableBy) {
-            if (!thePath.isEmpty()) {
-                theResult.add(thePath.lastElement());
-            }
-        }
-        return theResult;
-    }
-
-    public boolean hasBackEdgeTo(RegionNode aNode) {
-        for (Map.Entry<Edge, RegionNode> theEntry : successors.entrySet()) {
-            if (theEntry.getKey().getType() == EdgeType.BACK) {
-                if (theEntry.getValue() == aNode) {
-                    return true;
-                }
+    public boolean hasBackEdgeTo(final RegionNode aNode) {
+        for (final Edge edge : outgoingEdges(t -> t == ControlFlowEdgeType.back).collect(Collectors.toList())) {
+            if (edge.targetNode() == aNode) {
+                return true;
             }
         }
         return false;
     }
 
+    public boolean hasIncomingBackEdges() {
+        return incomingEdges().anyMatch(t -> t.edgeType() == ControlFlowEdgeType.back);
+    }
+
     public Set<RegionNode> getPredecessorsIgnoringBackEdges() {
-        Set<RegionNode> theResult = new HashSet<>();
-        for (GraphNodePath thePath : reachableBy) {
-            if (!thePath.isEmpty()) {
-                RegionNode theLastElement = thePath.lastElement();
-                if (!theLastElement.hasBackEdgeTo(this)) {
-                    theResult.add(theLastElement);
-                }
-            }
-        }
-        return theResult;
+        return incomingEdges().filter(t -> t.edgeType() == ControlFlowEdgeType.forward).map(t -> (RegionNode) t.sourceNode()).collect(Collectors.toSet());
     }
 
-    public void addSuccessor(RegionNode aBlock) {
-        if (!successors.values().contains(aBlock)) {
-            successors.put(new Edge(EdgeType.NORMAL), aBlock);
-        }
-    }
-
-    public Map<Edge, RegionNode> getSuccessors() {
-        return successors;
+    public Set<RegionNode> getPredecessors() {
+        return incomingEdges().map(t -> (RegionNode) t.sourceNode()).collect(Collectors.toSet());
     }
 
     public BytecodeOpcodeAddress getStartAddress() {
         return startAddress;
     }
 
-    public Variable newVariable(TypeRef aType) {
+    public Variable newVariable(final TypeRef aType) {
         return program.createVariable(aType);
     }
 
-    public Variable newVariable(TypeRef aType, Value aValue)  {
+    public Variable newVariable(final BytecodeOpcodeAddress aAddress, final TypeRef aType, final Value aValue)  {
         if (aValue instanceof Variable) {
-            Variable theVar = (Variable) aValue;
+            final Variable theVar = (Variable) aValue;
             if (theVar.isSynthetic()) {
                 return theVar;
             }
-
         }
-        return newVariable(aType, aValue, false);
-    }
-
-    public Variable newVariable(TypeRef aType, Value aValue, boolean aIsImport)  {
-        Variable theNewVariable = newVariable(aType);
-        theNewVariable.initializeWith(aValue);
-        if (!aIsImport) {
-            expressions.add(new VariableAssignmentExpression(theNewVariable, aValue));
-        }
+        final Variable theNewVariable = newVariable(aType);
+        theNewVariable.initializeWith(aValue, program.getAnalysisTime());
+        expressions.add(new VariableAssignmentExpression(program, aAddress, theNewVariable, aValue));
         return theNewVariable;
     }
 
-    public Variable newImportedVariable(TypeRef aType, VariableDescription aDescription) {
-        Variable theVariable = newVariable(aType);
-        imported.put(aDescription, theVariable);
-        return theVariable;
+    public void addToLiveIn(final Value aValue, final VariableDescription aDescription) {
+        liveIn.put(aDescription, aValue);
     }
 
-    public void addToExportedList(Value aValue, VariableDescription aDescription) {
-        exported.put(aDescription, aValue);
+    public void addToLiveOut(final Value aValue, final VariableDescription aDescription) {
+        liveOut.put(aDescription, aValue);
     }
 
-    public void addToImportedList(Value aValue, VariableDescription aDescription) {
-        imported.put(aDescription, aValue);
+    public void replaceInLiveInAndOut(final Variable key, final Value value) {
+        final Set<VariableDescription> theInDesc = liveIn.entrySet().stream().filter(t -> t.getValue() == key).map(Map.Entry::getKey).collect(Collectors.toSet());
+        for (final VariableDescription desc : theInDesc) {
+            liveIn.put(desc, value);
+        }
+        final Set<VariableDescription> theOutDesc = liveOut.entrySet().stream().filter(t -> t.getValue() == key).map(Map.Entry::getKey).collect(Collectors.toSet());
+        for (final VariableDescription desc : theOutDesc) {
+            liveOut.put(desc, value);
+        }
     }
 
-    public BlockState toFinalState() {
-        BlockState theState = new BlockState();
-        for (Map.Entry<VariableDescription, Value> theEntry : exported.entrySet()) {
+    public BlockState liveIn() {
+        final BlockState theState = new BlockState();
+        for (final Map.Entry<VariableDescription, Value> theEntry : liveIn.entrySet()) {
             theState.assignToPort(theEntry.getKey(), theEntry.getValue());
         }
         return theState;
     }
 
-    public BlockState toStartState() {
-        BlockState theState = new BlockState();
-        for (Map.Entry<VariableDescription, Value> theEntry : imported.entrySet()) {
+    public BlockState liveOut() {
+        final BlockState theState = new BlockState();
+        for (final Map.Entry<VariableDescription, Value> theEntry : liveOut.entrySet()) {
             theState.assignToPort(theEntry.getKey(), theEntry.getValue());
         }
         return theState;
     }
 
-
-    public boolean isStrictlyDominatedBy(RegionNode aNode) {
-        List<RegionNode> thePredecessors = new ArrayList<>(getPredecessors());
+    public boolean isImmediatelyDominatedBy(final RegionNode aNode) {
+        final Set<RegionNode> thePredecessors = getPredecessorsIgnoringBackEdges();
         return thePredecessors.size() == 1 && thePredecessors.contains(aNode);
     }
 
-    public void deleteVariable(Variable aVariable) {
-        deleteVariable(aVariable, expressions);
-    }
-
-    private void deleteVariable(Variable aVariable, ExpressionList aList) {
-        for (Expression theExpression : aList.toList()) {
-            if (theExpression instanceof ExpressionListContainer) {
-                ExpressionListContainer theContainer = (ExpressionListContainer) theExpression;
-                for (ExpressionList theList : theContainer.getExpressionLists()) {
-                    deleteVariable(aVariable, theList);
-                }
-            }
-            if (theExpression instanceof VariableAssignmentExpression) {
-                VariableAssignmentExpression theInit = (VariableAssignmentExpression) theExpression;
-                List<Value> theIncomingDataFlows = theInit.incomingDataFlows();
-                if (theIncomingDataFlows.get(0) == aVariable) {
-                    aList.remove(theExpression);
-                }
-            }
-        }
-    }
-
-    public boolean isOnlyReachableThru(RegionNode aOtherNode) {
-        // Start nodes are not reachable by anything
-        if (reachableBy.isEmpty()) {
-            return false;
-        }
-        // All paths to this node must go thru aOtherNode
-        for (GraphNodePath thePath : reachableBy) {
-            if (!thePath.contains(aOtherNode)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    public Set<RegionNode> forwardReachableNodes() {
-        Set<RegionNode> theNodes = new HashSet<>();
-        forwardReachableNodes(theNodes, this);
-        return theNodes;
+    public boolean isDominatedBy(final RegionNode aOtherNode) {
+        return owningGraph.dominates(aOtherNode, this);
     }
 
     public Set<RegionNode> dominatedNodes() {
         return owningGraph.dominatedNodesOf(this);
     }
 
-    private static void forwardReachableNodes(Set<RegionNode> aResult, RegionNode aNode) {
-        if (aResult.add(aNode)) {
-            for (Map.Entry<Edge,RegionNode> theSuc : aNode.successors.entrySet()) {
-                if (theSuc.getKey().type == EdgeType.NORMAL) {
-                    forwardReachableNodes(aResult, theSuc.getValue());
-                }
-            }
+    @Override
+    public <T extends Node> T addEdgeTo(final ControlFlowEdgeType aType, final T aTargetNode) {
+        if (outgoingEdges().noneMatch(t -> t.targetNode() == aTargetNode)) {
+            return super.addEdgeTo(aType, aTargetNode);
         }
+        return null;
     }
 
-    public void removeEdgesTo(RegionNode aNode) {
-        Map<Edge, RegionNode> theNewSucc = new HashMap<>();
-        for (Map.Entry<Edge, RegionNode> theEntry : successors.entrySet()) {
-            if (!(theEntry.getValue() == aNode)) {
-                theNewSucc.put(theEntry.getKey(), theEntry.getValue());
-            }
-        }
-        successors.clear();
-        successors.putAll(theNewSucc);
-    }
-
-    public void removeFromPaths(RegionNode aNode) {
-        for (GraphNodePath thePath : reachableBy) {
-            thePath.remove(aNode);
-        }
-    }
-
-    public void inheritSuccessorsOf(RegionNode aNode) {
-        for (Map.Entry<Edge, RegionNode> theEntry : aNode.successors.entrySet()) {
-            successors.put(theEntry.getKey(), theEntry.getValue());
-        }
+    @Override
+    public String toString() {
+        return "RegionNode{" +
+                "startAddress=" + startAddress +
+                '}';
     }
 }

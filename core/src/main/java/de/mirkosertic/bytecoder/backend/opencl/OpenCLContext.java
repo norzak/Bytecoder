@@ -15,6 +15,36 @@
  */
 package de.mirkosertic.bytecoder.backend.opencl;
 
+import de.mirkosertic.bytecoder.allocator.Allocator;
+import de.mirkosertic.bytecoder.api.Logger;
+import de.mirkosertic.bytecoder.api.opencl.Context;
+import de.mirkosertic.bytecoder.api.opencl.FloatSerializable;
+import de.mirkosertic.bytecoder.api.opencl.Kernel;
+import de.mirkosertic.bytecoder.api.opencl.OpenCLOptions;
+import de.mirkosertic.bytecoder.api.opencl.OpenCLType;
+import de.mirkosertic.bytecoder.backend.CompileOptions;
+import de.mirkosertic.bytecoder.core.BytecodeLinkerContext;
+import de.mirkosertic.bytecoder.core.BytecodeLoader;
+import de.mirkosertic.bytecoder.core.BytecodeMethodSignature;
+import de.mirkosertic.bytecoder.optimizer.KnownOptimizer;
+import de.mirkosertic.bytecoder.ssa.TypeRef;
+import org.jocl.Pointer;
+import org.jocl.Sizeof;
+import org.jocl.cl_command_queue;
+import org.jocl.cl_context;
+import org.jocl.cl_context_properties;
+import org.jocl.cl_kernel;
+import org.jocl.cl_mem;
+import org.jocl.cl_program;
+
+import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.nio.FloatBuffer;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import static org.jocl.CL.CL_CONTEXT_PLATFORM;
 import static org.jocl.CL.CL_DEVICE_TYPE_ALL;
 import static org.jocl.CL.CL_MEM_READ_WRITE;
@@ -36,36 +66,6 @@ import static org.jocl.CL.clReleaseMemObject;
 import static org.jocl.CL.clReleaseProgram;
 import static org.jocl.CL.clSetKernelArg;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.nio.FloatBuffer;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import org.jocl.Pointer;
-import org.jocl.Sizeof;
-import org.jocl.cl_command_queue;
-import org.jocl.cl_context;
-import org.jocl.cl_context_properties;
-import org.jocl.cl_kernel;
-import org.jocl.cl_mem;
-import org.jocl.cl_program;
-
-import de.mirkosertic.bytecoder.api.opencl.Context;
-import de.mirkosertic.bytecoder.api.opencl.FloatSerializable;
-import de.mirkosertic.bytecoder.api.opencl.Kernel;
-import de.mirkosertic.bytecoder.api.opencl.OpenCLType;
-import de.mirkosertic.bytecoder.backend.CompileOptions;
-import de.mirkosertic.bytecoder.core.BytecodeLinkerContext;
-import de.mirkosertic.bytecoder.core.BytecodeLoader;
-import de.mirkosertic.bytecoder.core.BytecodeMethodSignature;
-import de.mirkosertic.bytecoder.core.BytecodePackageReplacer;
-import de.mirkosertic.bytecoder.api.Logger;
-import de.mirkosertic.bytecoder.ssa.TypeRef;
-import de.mirkosertic.bytecoder.optimizer.KnownOptimizer;
-import de.mirkosertic.bytecoder.unittest.Slf4JLogger;
-
 class OpenCLContext implements Context {
 
     private static class CachedKernel {
@@ -74,7 +74,7 @@ class OpenCLContext implements Context {
         private final cl_program program;
         private final cl_kernel kernel;
 
-        CachedKernel(OpenCLInputOutputs aInputOutputs, cl_program aProgram, cl_kernel aKernel) {
+        CachedKernel(final OpenCLInputOutputs aInputOutputs, final cl_program aProgram, final cl_kernel aKernel) {
             inputOutputs = aInputOutputs;
             program = aProgram;
             kernel = aKernel;
@@ -91,7 +91,7 @@ class OpenCLContext implements Context {
         private final Pointer pointer;
         private final int size;
 
-        DataRef(Pointer aPointer, int aSize) {
+        DataRef(final Pointer aPointer, final int aSize) {
             pointer = aPointer;
             size = aSize;
         }
@@ -110,14 +110,14 @@ class OpenCLContext implements Context {
     private final Logger logger;
     private final OpenCLPlatform platform;
 
-    OpenCLContext(OpenCLPlatform aPlatform, Logger aLogger) {
+    OpenCLContext(final OpenCLPlatform aPlatform, final Logger aLogger, final OpenCLOptions aOptions) {
         logger = aLogger;
         platform = aPlatform;
         cachedKernels = new HashMap<>();
         backend = new OpenCLCompileBackend();
-        compileOptions = new CompileOptions(new Slf4JLogger(), false, KnownOptimizer.ALL);
+        compileOptions = new CompileOptions(logger, false, KnownOptimizer.ALL, true, "opencl", 512, 512, false, aOptions.isPreferStackifier(), Allocator.linear);
 
-        cl_context_properties contextProperties = new cl_context_properties();
+        final cl_context_properties contextProperties = new cl_context_properties();
         contextProperties.addProperty(CL_CONTEXT_PLATFORM, aPlatform.selectedPlatform.id);
 
         context = clCreateContextFromType(
@@ -127,88 +127,98 @@ class OpenCLContext implements Context {
                 clCreateCommandQueue(context, aPlatform.selectedDevice.id, 0, null);
     }
 
-    private CachedKernel kernelFor(Kernel aKernel) {
+    private CachedKernel kernelFor(final Kernel aKernel) throws IOException {
 
-        Class theKernelClass = aKernel.getClass();
+        final Class theKernelClass = aKernel.getClass();
 
-        CachedKernel theCachedKernel = cachedKernels.get(theKernelClass);
-        if (theCachedKernel != null) {
+        final CachedKernel theCachedKernel = cachedKernels.get(theKernelClass);
+        if (null != theCachedKernel) {
             return theCachedKernel;
         }
 
         OpenCLCompileResult theResult = ALREADY_COMPILED.get(theKernelClass);
-        if (theResult == null) {
-            Method theMethod;
+        OpenCLCompileResult.OpenCLContent content = null;
+        if (null == theResult) {
+            final Method theMethod;
             try {
                 theMethod = aKernel.getClass().getDeclaredMethod("processWorkItem");
-            } catch (Exception e) {
+            } catch (final Exception e) {
                 throw new IllegalArgumentException("Error resolving kernel method", e);
             }
 
-            BytecodeMethodSignature theSignature = backend.signatureFrom(theMethod);
+            final BytecodeMethodSignature theSignature = backend.signatureFrom(theMethod);
 
-            BytecodeLoader theLoader = new BytecodeLoader(theKernelClass.getClassLoader(), new BytecodePackageReplacer());
-            BytecodeLinkerContext theLinkerContext = new BytecodeLinkerContext(theLoader, compileOptions.getLogger());
+            final BytecodeLoader theLoader = new BytecodeLoader(theKernelClass.getClassLoader());
+            final BytecodeLinkerContext theLinkerContext = new BytecodeLinkerContext(theLoader, compileOptions.getLogger());
             theResult = backend.generateCodeFor(compileOptions, theLinkerContext, aKernel.getClass(), theMethod.getName(), theSignature);
 
-            logger.debug("Generated Kernel code : {}", theResult.getData());
+            content = theResult.getContent()[0];
+
+            logger.debug("Generated Kernel code : {}", content.asString());
 
             ALREADY_COMPILED.put(theKernelClass, theResult);
+        } else {
+            content = theResult.getContent()[0];
         }
 
         // Construct the program
-        cl_program theCLProgram = clCreateProgramWithSource(context,
-                1, new String[]{ theResult.getData() }, null, null);
+        final cl_program theCLProgram = clCreateProgramWithSource(context,
+                1, new String[]{ content.asString() }, null, null);
 
-        clBuildProgram(theCLProgram, 0, null, null, null, null);
+        try {
+            clBuildProgram(theCLProgram, 0, null, null, null, null);
+        } catch (final Exception e) {
+            throw new RuntimeException("Error compiling : " + content.asString(), e);
+        }
 
-        cl_kernel theKernel = clCreateKernel(theCLProgram, "BytecoderKernel", null);
+        final cl_kernel theKernel = clCreateKernel(theCLProgram, "BytecoderKernel", null);
 
-        CachedKernel theCached = new CachedKernel(theResult.getInputOutputs(), theCLProgram, theKernel);
+        final CachedKernel theCached = new CachedKernel(content.getInputOutputs(), theCLProgram, theKernel);
         cachedKernels.put(theKernelClass, theCached);
         return theCached;
     }
 
-    public void compute(int aNumberOfStreams, Kernel aKernel) {
+    @Override
+    public void compute(final int aNumberOfStreams, final Kernel aKernel) throws IOException {
 
-        Class theKernelClass = aKernel.getClass();
-        CachedKernel theCachedKernel = kernelFor(aKernel);
+        final Class theKernelClass = aKernel.getClass();
+        final CachedKernel theCachedKernel = kernelFor(aKernel);
 
         // Construct the input and output elements based on object properties
-        List<OpenCLInputOutputs.KernelArgument> theArguments = theCachedKernel.inputOutputs.arguments();
-        cl_mem theMemObjects[] = new cl_mem[theArguments.size()];
-        Map<Integer, DataRef> theOutputs = new HashMap<>();
+        final List<OpenCLInputOutputs.KernelArgument> theArguments = theCachedKernel.inputOutputs.arguments();
+        final cl_mem[] theMemObjects = new cl_mem[theArguments.size()];
+        final Map<Integer, DataRef> theOutputs = new HashMap<>();
         try {
             for (int i = 0; i < theArguments.size(); i++) {
 
-                OpenCLInputOutputs.KernelArgument theArgument = theArguments.get(i);
+                final OpenCLInputOutputs.KernelArgument theArgument = theArguments.get(i);
 
-                TypeRef theFieldType = TypeRef.toType(theArgument.getField().getValue().getTypeRef());
-                DataRef theDataRef;
+                final TypeRef theFieldType = TypeRef.toType(theArgument.getField().getValue().getTypeRef());
+                final DataRef theDataRef;
                 if (theFieldType.isArray()) {
-                    TypeRef.ArrayTypeRef theArrayTypeRef = (TypeRef.ArrayTypeRef) theFieldType;
-                    TypeRef theArrayElement = TypeRef.toType(theArrayTypeRef.arrayType().getType());
+                    final TypeRef.ArrayTypeRef theArrayTypeRef = (TypeRef.ArrayTypeRef) theFieldType;
+                    final TypeRef theArrayElement = TypeRef.toType(theArrayTypeRef.arrayType().getType());
                     switch (theArrayElement.resolve()) {
                     case INT: {
-                        Field theField = theKernelClass.getDeclaredField(theArgument.getField().getValue().getName().stringValue());
+                        final Field theField = theKernelClass.getDeclaredField(theArgument.getField().getValue().getName().stringValue());
                         theField.setAccessible(true);
-                        int[] theData = (int[]) theField.get(aKernel);
+                        final int[] theData = (int[]) theField.get(aKernel);
                         theDataRef = new DataRef(Pointer.to(theData), Sizeof.cl_int * theData.length);
                         break;
                     }
                     case FLOAT: {
-                        Field theField = theKernelClass.getDeclaredField(theArgument.getField().getValue().getName().stringValue());
+                        final Field theField = theKernelClass.getDeclaredField(theArgument.getField().getValue().getName().stringValue());
                         theField.setAccessible(true);
-                        float[] theData = (float[]) theField.get(aKernel);
+                        final float[] theData = (float[]) theField.get(aKernel);
                         theDataRef = new DataRef(Pointer.to(theData), Sizeof.cl_float * theData.length);
                         break;
                     }
                     case REFERENCE: {
-                        Field theField = theKernelClass.getDeclaredField(theArgument.getField().getValue().getName().stringValue());
+                        final Field theField = theKernelClass.getDeclaredField(theArgument.getField().getValue().getName().stringValue());
                         theField.setAccessible(true);
-                        Object[] theData = (Object[]) theField.get(aKernel);
+                        final Object[] theData = (Object[]) theField.get(aKernel);
 
-                        Class theObjectType = theData.getClass().getComponentType();
+                        final Class theObjectType = theData.getClass().getComponentType();
 
                         theDataRef = toDataRef(theData, theObjectType);
                         break;
@@ -216,40 +226,57 @@ class OpenCLContext implements Context {
                     default:
                         throw new IllegalArgumentException("Not supported array element type " + theArrayElement.resolve() + " for kernel argument " + theArgument.getField().getValue().getName());
                     }
-                } else {
-                    throw new IllegalArgumentException("Type " + theFieldType + " is not supported for kernel argument " + theArgument.getField().getValue().getName().stringValue());
-                }
 
-                switch (theArgument.getType()) {
-                case INPUT:
+                    switch (theArgument.getType()) {
+                        case INPUT:
 /*                    theMemObjects[i] = clCreateBuffer(context,
                             CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                             theDataRef.size * aNumberOfStreams, theDataRef.pointer, null);
 
                     break;*/
-                case OUTPUT:
-                case INPUTOUTPUT:
-                    theMemObjects[i] = clCreateBuffer(context,
-                            CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR,
-                            theDataRef.size, theDataRef.pointer, null);
+                        case OUTPUT:
+                        case INPUTOUTPUT:
+                            theMemObjects[i] = clCreateBuffer(context,
+                                    CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR,
+                                    theDataRef.size, theDataRef.pointer, null);
 
-                    theOutputs.put(i, theDataRef);
+                            theOutputs.put(i, theDataRef);
 
-                    break;
+                            break;
+                    }
+
+                    clSetKernelArg(theCachedKernel.kernel, i,
+                            Sizeof.cl_mem, Pointer.to(theMemObjects[i]));
+
+                } else {
+                    final Field theField = theKernelClass.getDeclaredField(theArgument.getField().getValue().getName().stringValue());
+                    theField.setAccessible(true);
+
+                    switch (theFieldType.resolve()) {
+                        case FLOAT: {
+                            final float theData = (float) theField.get(aKernel);
+                            clSetKernelArg(theCachedKernel.kernel, i, Sizeof.cl_float, Pointer.to(new float[]{theData}));
+                            break;
+                        }
+                        case INT: {
+                            final int theData = (int) theField.get(aKernel);
+                            clSetKernelArg(theCachedKernel.kernel, i, Sizeof.cl_int, Pointer.to(new int[]{theData}));
+                            break;
+                        }
+                        default:
+                            throw new IllegalArgumentException("Type " + theFieldType + " is not supported for kernel argument " + theArgument.getField().getValue().getName().stringValue());
+                    }
                 }
-
-                clSetKernelArg(theCachedKernel.kernel, i,
-                        Sizeof.cl_mem, Pointer.to(theMemObjects[i]));
             }
-        } catch (Exception e) {
+        } catch (final Exception e) {
             throw new RuntimeException("Error extracting kernel parameter", e);
         }
 
         // Set the work-item dimensions
-        long global_work_size[] = new long[] {aNumberOfStreams};
+        final long[] global_work_size = {aNumberOfStreams};
 
         // Let the driver guess the optimal size
-        long local_work_size[] = null; //new long[] {32};
+        final long[] local_work_size = null; //new long[] {32};
 
         // Execute the kernel
         clEnqueueNDRangeKernel(commandQueue, theCachedKernel.kernel, 1, null,
@@ -259,8 +286,8 @@ class OpenCLContext implements Context {
         clFinish(commandQueue);
 
         // Read the output data
-        for (Map.Entry<Integer, DataRef> theEntry : theOutputs.entrySet()) {
-            DataRef theDataRef = theEntry.getValue();
+        for (final Map.Entry<Integer, DataRef> theEntry : theOutputs.entrySet()) {
+            final DataRef theDataRef = theEntry.getValue();
             clEnqueueReadBuffer(commandQueue, theMemObjects[theEntry.getKey()], CL_TRUE, 0,
                     theDataRef.size, theDataRef.pointer, 0, null, null);
 
@@ -268,26 +295,28 @@ class OpenCLContext implements Context {
         }
 
         // Release memory
-        for (cl_mem theMem : theMemObjects) {
-            clReleaseMemObject(theMem);
+        for (final cl_mem theMem : theMemObjects) {
+            if (theMem != null) {
+                clReleaseMemObject(theMem);
+            }
         }
     }
 
-    private static DataRef toDataRef(Object[] aArray, Class aDataType) {
+    private static DataRef toDataRef(final Object[] aArray, final Class aDataType) {
         if (FloatSerializable.class.isAssignableFrom(aDataType)) {
-            OpenCLType theType = (OpenCLType) aDataType.getAnnotation(OpenCLType.class);
-            int theSize = aArray.length * theType.elementCount();
-            FloatBuffer theBuffer = FloatBuffer.allocate(theSize);
-            for (Object anAArray : aArray) {
-                FloatSerializable theVec = (FloatSerializable) anAArray;
+            final OpenCLType theType = (OpenCLType) aDataType.getAnnotation(OpenCLType.class);
+            final int theSize = aArray.length * theType.elementCount();
+            final FloatBuffer theBuffer = FloatBuffer.allocate(theSize);
+            for (final Object anAArray : aArray) {
+                final FloatSerializable theVec = (FloatSerializable) anAArray;
                 theVec.writeTo(theBuffer);
             }
             return new DataRef(Pointer.to(theBuffer), Sizeof.cl_float * theSize) {
                 @Override
                 public void updateFromBuffer() {
                     theBuffer.rewind();
-                    for (Object anAArray : aArray) {
-                        FloatSerializable theVec = (FloatSerializable) anAArray;
+                    for (final Object anAArray : aArray) {
+                        final FloatSerializable theVec = (FloatSerializable) anAArray;
                         theVec.readFrom(theBuffer);
                     }
                 }
@@ -298,7 +327,7 @@ class OpenCLContext implements Context {
 
     @Override
     public void close() {
-        for (CachedKernel theCached : cachedKernels.values()) {
+        for (final CachedKernel theCached : cachedKernels.values()) {
             theCached.close();
         }
         clReleaseCommandQueue(commandQueue);

@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Mirko Sertic
+ * Copyright 2018 Mirko Sertic
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,32 +15,45 @@
  */
 package de.mirkosertic.bytecoder.classlib.java.lang;
 
-import de.mirkosertic.bytecoder.api.DelegatesTo;
-import de.mirkosertic.bytecoder.classlib.java.io.TPrintStream;
+import de.mirkosertic.bytecoder.api.SubstitutesInClass;
 
+import java.io.PrintStream;
+
+@SubstitutesInClass(completeReplace = true)
 public class TThrowable {
 
-    private String message;
-
-    @DelegatesTo(methodName = "doNothingAgain")
-    public TThrowable() {
-    }
+    private final String message;
 
     public TThrowable(String aMessage) {
         message = aMessage;
     }
 
+    public TThrowable(String aMessage, Throwable aCause) {
+        message = aMessage;
+    }
+
+    public TThrowable(Throwable aCause) {
+        message = null;
+    }
+
+    public TThrowable() {
+        message = null;
+    }
+
+    private void doNothing() {
+    }
+
+    public void printStackTrace() {
+    }
+
+    public void printStackTrace(PrintStream s) {
+    }
+
+    public Throwable fillInStackTrace() {
+        return (Throwable) (Object) this;
+    }
+
     public String getMessage() {
         return message;
-    }
-
-    public void printStackTrace(TPrintStream aStream) {
-    }
-
-    public void addSuppressed(TThrowable aThrowable) {
-    }
-
-    private void doNothingAgain() {
-
     }
 }

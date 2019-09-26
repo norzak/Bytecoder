@@ -15,20 +15,27 @@
  */
 package de.mirkosertic.bytecoder.core;
 
+import de.mirkosertic.bytecoder.unittest.BytecoderTestOptions;
+import de.mirkosertic.bytecoder.unittest.BytecoderUnitTestRunner;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import de.mirkosertic.bytecoder.unittest.BytecoderUnitTestRunner;
-
 @RunWith(BytecoderUnitTestRunner.class)
+@BytecoderTestOptions(includeJVM = false)
 public class RuntimeClassTest {
 
     @Test
     public void testRuntimeClass() {
-        String str1 = new String("1");
-        String str2 = new String("1");
+        final String str1 = new String("1");
+        final String str2 = new String("1");
         Assert.assertSame(str1.getClass(), str2.getClass());
         Assert.assertNotSame(str1.getClass(), RuntimeClassTest.class);
+    }
+
+    @Test
+    public void testGetName() {
+        System.out.println(RuntimeClassTest.class.getName());
+        Assert.assertEquals("RuntimeClassTest", RuntimeClassTest.class.getName());
     }
 }

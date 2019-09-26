@@ -5,7 +5,7 @@
     <parent>
         <groupId>de.mirkosertic.bytecoder</groupId>
         <artifactId>bytecoder-parent</artifactId>
-        <version>2018-03-01-SNAPSHOT</version>
+        <version>0-SNAPSHOT</version>
     </parent>
 
     <artifactId>bytecoder-mavenplugin</artifactId>
@@ -22,23 +22,39 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-plugin-plugin</artifactId>
-                <version>3.5</version>
+                <version>3.6.0</version>
                 <configuration>
                     <goalPrefix>bytecoder</goalPrefix>
                     <skipErrorNoDescriptorsFound>true</skipErrorNoDescriptorsFound>
                 </configuration>
                 <executions>
                     <execution>
-                        <id>mojo-descriptor</id>
+                        <id>default-descriptor</id>
                         <goals>
                             <goal>descriptor</goal>
                         </goals>
+                        <configuration>
+                            <extractors>
+                                <extractor>java-annotations</extractor>
+                            </extractors>
+                            <mojoDependencies>
+                                <mojoDependency>de.mirkosertic.bytecoder:bytecoder-mavenplugin</mojoDependency>
+                            </mojoDependencies>
+                        </configuration>
                     </execution>
                     <execution>
                         <id>help-goal</id>
                         <goals>
                             <goal>helpmojo</goal>
                         </goals>
+                        <configuration>
+                            <extractors>
+                                <extractor>java-annotations</extractor>
+                            </extractors>
+                            <mojoDependencies>
+                                <mojoDependency>de.mirkosertic.bytecoder:bytecoder-mavenplugin</mojoDependency>
+                            </mojoDependencies>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
@@ -61,26 +77,20 @@
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-core</artifactId>
             <scope>provided</scope>
-            <version>3.5.0</version>
+            <version>3.6.2</version>
         </dependency>
 
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-artifact</artifactId>
             <scope>provided</scope>
-            <version>3.5.0</version>
-        </dependency>
-
-        <dependency>
-            <groupId>com.google.javascript</groupId>
-            <artifactId>closure-compiler</artifactId>
-            <version>v20170910</version>
+            <version>3.6.2</version>
         </dependency>
 
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-plugin-api</artifactId>
-            <version>3.5.0</version>
+            <version>3.6.2</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.maven</groupId>
@@ -99,13 +109,13 @@
         <dependency>
             <groupId>org.apache.maven.plugin-tools</groupId>
             <artifactId>maven-plugin-annotations</artifactId>
-            <version>3.5</version>
+            <version>3.6.0</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.codehaus.plexus</groupId>
             <artifactId>plexus-utils</artifactId>
-            <version>3.1.0</version>
+            <version>3.2.1</version>
         </dependency>
         <dependency>
             <groupId>junit</groupId>
@@ -116,7 +126,7 @@
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
-            <version>2.10.0</version>
+            <version>3.0.0</version>
             <scope>test</scope>
         </dependency>
         <dependency>

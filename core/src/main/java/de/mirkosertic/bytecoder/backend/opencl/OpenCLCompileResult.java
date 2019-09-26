@@ -17,22 +17,45 @@ package de.mirkosertic.bytecoder.backend.opencl;
 
 import de.mirkosertic.bytecoder.backend.CompileResult;
 
+import java.io.OutputStream;
+import java.io.PrintStream;
+
 public class OpenCLCompileResult implements CompileResult<String> {
 
-    private final OpenCLInputOutputs inputOutputs;
-    private final String kernelSource;
+    public static class OpenCLContent implements Content {
+        private final OpenCLInputOutputs inputOutputs;
+        private final String kernelSource;
 
-    public OpenCLCompileResult(OpenCLInputOutputs aInputOutputs, String aKernelSource) {
-        inputOutputs = aInputOutputs;
-        kernelSource = aKernelSource;
+        public OpenCLContent(final OpenCLInputOutputs inputOutputs, final String kernelSource) {
+            this.inputOutputs = inputOutputs;
+            this.kernelSource = kernelSource;
+        }
+
+        public OpenCLInputOutputs getInputOutputs() {
+            return inputOutputs;
+        }
+
+        @Override
+        public String getFileName() {
+            return "BytecoderKernel";
+        }
+
+        @Override
+        public void writeTo(final OutputStream stream) {
+            try (final PrintStream ps = new PrintStream(stream)) {
+                ps.print(kernelSource);
+            }
+        }
+    }
+
+    private final OpenCLContent[] content;
+
+    public OpenCLCompileResult(final OpenCLContent... content) {
+        this.content = content;
     }
 
     @Override
-    public String getData() {
-        return kernelSource;
-    }
-
-    public OpenCLInputOutputs getInputOutputs() {
-        return inputOutputs;
+    public OpenCLContent[] getContent() {
+        return content;
     }
 }

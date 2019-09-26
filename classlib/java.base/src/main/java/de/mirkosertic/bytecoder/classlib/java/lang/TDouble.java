@@ -15,24 +15,30 @@
  */
 package de.mirkosertic.bytecoder.classlib.java.lang;
 
-public class TDouble extends TNumber {
+import de.mirkosertic.bytecoder.api.SubstitutesInClass;
+import de.mirkosertic.bytecoder.classlib.VM;
+
+@SubstitutesInClass(completeReplace = true)
+public class TDouble extends Number {
+
+    public static final double NaN = 0.0d / 0.0;
 
     private final double doubleValue;
 
-    public TDouble(double aDoubleValue) {
+    public TDouble(final double aDoubleValue) {
         doubleValue = aDoubleValue;
     }
 
     @Override
-    public boolean equals(Object o) {
+    public boolean equals(final Object o) {
         if (this == o)
             return true;
         if (o == null || getClass() != o.getClass())
             return false;
 
-        TDouble tDouble = (TDouble) o;
+        final Double aDouble = (Double) o;
 
-        if (Double.compare(tDouble.doubleValue, doubleValue) != 0)
+        if (Double.compare(aDouble.doubleValue(), doubleValue) != 0)
             return false;
 
         return true;
@@ -73,7 +79,7 @@ public class TDouble extends TNumber {
         return doubleValue;
     }
 
-    public static int compare(double d1, double d2) {
+    public static int compare(final double d1, final double d2) {
         if(d1 < d2) {
             return -1;
         }
@@ -83,15 +89,15 @@ public class TDouble extends TNumber {
         return 0;
     }
 
-    public static double parseDouble(String aValue) {
-        int p = aValue.indexOf('.');
+    public static double parseDouble(final String aValue) {
+        final int p = aValue.indexOf('.');
         if (p<0) {
-            return TNumber.stringToLong(aValue);
+            return VM.stringToLong(aValue);
         }
-        String thePrefix = aValue.substring(0, p);
-        String theSuffix = aValue.substring(p + 1);
-        long theA = TNumber.stringToLong(thePrefix);
-        long theB = TNumber.stringToLong(theSuffix);
+        final String thePrefix = aValue.substring(0, p);
+        final String theSuffix = aValue.substring(p + 1);
+        final long theA = VM.stringToLong(thePrefix);
+        final long theB = VM.stringToLong(theSuffix);
         int theMultiplier = 1;
         int theLength = Long.toString(theB).length();
         while(theLength > 0) {
@@ -109,17 +115,38 @@ public class TDouble extends TNumber {
         return toString(doubleValue);
     }
 
-    public static TDouble valueOf(String aValue) {
-        return new TDouble(parseDouble(aValue));
+    public static Double valueOf(final String aValue) {
+        return new Double(parseDouble(aValue));
     }
 
-    public static TDouble valueOf(double aValue) {
-        return new TDouble(aValue);
+    public static Double valueOf(final double aValue) {
+        return new Double(aValue);
     }
 
-    public static String toString(double aValue) {
-        TStringBuilder theBuffer = new TStringBuilder();
+    public static boolean isNaN(final double aValue) {
+        return !(aValue == aValue);
+    }
+
+    public static String toString(final double aValue) {
+        final StringBuilder theBuffer = new StringBuilder();
         theBuffer.append(aValue);
         return theBuffer.toString();
     }
+
+    public static long doubleToLongBits(final double aValue) {
+        return 0;
+    }
+
+    public static boolean isInfinite(final double aValue) {
+        return false;
+    }
+
+    public static double longBitsToDouble(final long aValue) {
+        return 0d;
+    }
+
+    public static long doubleToRawLongBits(final double value) {
+        return doubleToLongBits(value);
+    }
+
 }

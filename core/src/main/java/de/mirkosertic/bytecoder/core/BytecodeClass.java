@@ -57,6 +57,10 @@ public class BytecodeClass {
         return constantPool;
     }
 
+    public BytecodeField[] fields() {
+        return fields;
+    }
+
     public BytecodeField fieldByName(String aName) {
         for (BytecodeField theField : fields) {
             if (Objects.equals(theField.getName().stringValue(), aName)) {
@@ -68,7 +72,7 @@ public class BytecodeClass {
 
     public BytecodeMethod methodByNameAndSignatureOrNull(String aMethodName, BytecodeMethodSignature aSignature) {
         for (BytecodeMethod theMethod : methods) {
-            if (Objects.equals(aMethodName, theMethod.getName().stringValue()) && theMethod.getSignature().metchesExactlyTo(aSignature)) {
+            if (Objects.equals(aMethodName, theMethod.getName().stringValue()) && theMethod.getSignature().matchesExactlyTo(aSignature)) {
                 return theMethod;
             }
         }

@@ -17,16 +17,48 @@ package de.mirkosertic.bytecoder.backend.js;
 
 import de.mirkosertic.bytecoder.backend.CompileResult;
 
+import java.io.OutputStream;
+import java.io.PrintStream;
+
 public class JSCompileResult implements CompileResult<String> {
 
-    private final String data;
+    public static class JSContent implements Content {
 
-    public JSCompileResult(String aData) {
-        data = aData;
+        private final String fileName;
+        private final String data;
+
+        public JSContent(final String fileName, final String data) {
+            this.fileName = fileName;
+            this.data = data;
+        }
+
+        @Override
+        public String getFileName() {
+            return fileName;
+        }
+
+        @Override
+        public void writeTo(final OutputStream stream) {
+            try (final PrintStream ps = new PrintStream(stream)) {
+                ps.print(data);
+            }
+        }
+    }
+
+    private final JSContent[] content;
+    private final JSMinifier minifier;
+
+    public JSCompileResult(final JSMinifier aMinifier, final JSContent... content) {
+        this.minifier = aMinifier;
+        this.content = content;
     }
 
     @Override
-    public String getData() {
-        return data;
+    public JSContent[] getContent() {
+        return content;
+    }
+
+    public JSMinifier getMinifier() {
+        return minifier;
     }
 }

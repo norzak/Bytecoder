@@ -15,11 +15,18 @@
  */
 package de.mirkosertic.bytecoder.classlib.java.util;
 
-import de.mirkosertic.bytecoder.classlib.java.io.TSerializable;
+import de.mirkosertic.bytecoder.api.SubstitutesInClass;
 
-public class TRandom implements TSerializable {
+@SubstitutesInClass(completeReplace = true)
+public class TRandom {
+
+    private long seed;
 
     public TRandom() {
+    }
+
+    public TRandom(long seed) {
+        this.seed = seed;
     }
 
     public float nextFloat() {

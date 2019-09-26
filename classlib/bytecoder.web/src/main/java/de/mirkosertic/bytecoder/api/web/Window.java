@@ -15,9 +15,22 @@
  */
 package de.mirkosertic.bytecoder.api.web;
 
-public class Window {
+import de.mirkosertic.bytecoder.api.Import;
+import de.mirkosertic.bytecoder.api.OpaqueProperty;
 
-    public static HTMLDocument document() {
-        return new HTMLDocument();
-    }
+public abstract class Window implements EventTarget, WindowOrWorkerGlobalScope {
+
+    @Import(module = "runtime", name = "nativewindow")
+    public native static Window window();
+
+    @OpaqueProperty("document")
+    public abstract HTMLDocument document();
+
+    public abstract void requestAnimationFrame(AnimationFrameCallback aCallback);
+
+    @OpaqueProperty
+    public abstract float innerWidth();
+
+    @OpaqueProperty
+    public abstract float innerHeight();
 }

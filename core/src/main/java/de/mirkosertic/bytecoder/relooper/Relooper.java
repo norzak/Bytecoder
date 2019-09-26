@@ -15,25 +15,36 @@
  */
 package de.mirkosertic.bytecoder.relooper;
 
-import java.io.PrintStream;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.Stack;
-
+import de.mirkosertic.bytecoder.backend.CompileOptions;
+import de.mirkosertic.bytecoder.core.BytecodeExceptionTableEntry;
+import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+import de.mirkosertic.bytecoder.core.BytecodeUtf8Constant;
+import de.mirkosertic.bytecoder.graph.Edge;
 import de.mirkosertic.bytecoder.ssa.BreakExpression;
 import de.mirkosertic.bytecoder.ssa.ContinueExpression;
 import de.mirkosertic.bytecoder.ssa.ControlFlowGraph;
+import de.mirkosertic.bytecoder.ssa.ControlFlowEdgeType;
 import de.mirkosertic.bytecoder.ssa.Expression;
 import de.mirkosertic.bytecoder.ssa.ExpressionList;
 import de.mirkosertic.bytecoder.ssa.ExpressionListContainer;
 import de.mirkosertic.bytecoder.ssa.GotoExpression;
-import de.mirkosertic.bytecoder.ssa.RegionNode;
+import de.mirkosertic.bytecoder.ssa.IFExpression;
 import de.mirkosertic.bytecoder.ssa.Label;
-import de.mirkosertic.bytecoder.ssa.ReturnExpression;
+import de.mirkosertic.bytecoder.ssa.RegionNode;
+import de.mirkosertic.bytecoder.ssa.Value;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.Stack;
+import java.util.stream.Collectors;
 
 /**
  * Implementation of the Relooper Algorithm as described in Alon Zakai's Emscripten Paper.
@@ -46,10 +57,10 @@ public class Relooper {
         private final Label label;
         private int labelRequired;
 
-        protected Block(Set<RegionNode> aEntries, String aLabelPrefix) {
+        protected Block(final Set<RegionNode> aEntries, final String aLabelPrefix) {
             entries = aEntries;
-            StringBuilder theBuilder = new StringBuilder();
-            for (RegionNode aLabel : aEntries) {
+            final StringBuilder theBuilder = new StringBuilder();
+            for (final RegionNode aLabel : aEntries) {
                 if (theBuilder.length() > 0) {
                     theBuilder.append("_");
                 }
@@ -57,6 +68,10 @@ public class Relooper {
             }
             labelRequired = 0;
             label = new Label(aLabelPrefix + theBuilder.toString());
+        }
+
+        public Label label() {
+            return label;
         }
 
         public boolean isLabelRequired() {
@@ -67,15 +82,15 @@ public class Relooper {
             labelRequired++;
         }
 
-        public Set<RegionNode> entries() {
-            return entries;
+        public List<RegionNode> entries() {
+            final ArrayList<RegionNode> theResult = new ArrayList<>(entries);
+            theResult.sort(Comparator.comparingInt(o -> o.getStartAddress().getAddress()));
+            return theResult;
         }
 
         public abstract Block next();
 
-        public Label label() {
-            return label;
-        }
+        public abstract boolean containsMultipleBlock();
     }
 
     /**
@@ -86,22 +101,172 @@ public class Relooper {
      * that label, and the Next block appears right after it.
      */
     public static class SimpleBlock extends Block {
+
         private final RegionNode internalLabel;
         private final Block next;
+        private final ExpressionList expressionList;
 
-        public SimpleBlock(Set<RegionNode> aEntries, RegionNode aInternalLabel, Block aNext) {
+        public SimpleBlock(final Set<RegionNode> aEntries, final RegionNode aInternalLabel, final Block aNext) {
             super(aEntries, "S_");
             internalLabel = aInternalLabel;
             next = aNext;
+            expressionList = aInternalLabel.getExpressions().deepCopy();
         }
 
         public RegionNode internalLabel() {
             return internalLabel;
         }
 
+        public ExpressionList expressions() {
+            return expressionList;
+        }
+
         @Override
         public Block next() {
             return next;
+        }
+
+        @Override
+        public boolean containsMultipleBlock() {
+            if (next != null) {
+                return next.containsMultipleBlock();
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Block for high level if/then/else language constructs.
+     */
+    public static class IFThenElseBlock extends Block {
+
+        private final ExpressionList prelude;
+        private final Value condition;
+        private final Block trueBlock;
+        private final Block falseBlock;
+        private final Block nextBlock;
+
+        public IFThenElseBlock(final ExpressionList aPrelude, final Set<RegionNode> aEntries, final Value condition,
+                final Block trueBlock, final Block falseBlock, final Block nextBlock) {
+            super(aEntries, "IF_");
+            this.prelude = aPrelude;
+            this.condition = condition;
+            this.trueBlock = trueBlock;
+            this.falseBlock = falseBlock;
+            this.nextBlock = nextBlock;
+        }
+
+        public Value getCondition() {
+            return condition;
+        }
+
+        public Block getTrueBlock() {
+            return trueBlock;
+        }
+
+        public Block getFalseBlock() {
+            return falseBlock;
+        }
+
+        @Override
+        public Block next() {
+            return nextBlock;
+        }
+
+        @Override
+        public boolean containsMultipleBlock() {
+            if (trueBlock != null && trueBlock.containsMultipleBlock()) {
+                return true;
+            }
+            if (falseBlock != null && falseBlock.containsMultipleBlock()) {
+                return true;
+            }
+            if (nextBlock != null) {
+                return nextBlock.containsMultipleBlock();
+            }
+            return false;
+        }
+
+        public ExpressionList getPrelude() {
+            return prelude;
+        }
+    }
+
+    /**
+     * A Try block guards its inner block for exceptions. Without exceptions, control
+     * flow is continued in the next block.
+     */
+    public static class TryBlock extends Block {
+
+        public static class CatchBlock {
+
+            private final Set<BytecodeUtf8Constant> caughtExceptions;
+            private final Block handler;
+
+            public CatchBlock(final Set<BytecodeUtf8Constant> caughtExceptions, final Block handler) {
+                this.caughtExceptions = caughtExceptions;
+                this.handler = handler;
+            }
+
+            public Set<BytecodeUtf8Constant> getCaughtExceptions() {
+                return caughtExceptions;
+            }
+
+            public Block getHandler() {
+                return handler;
+            }
+        }
+
+        private final Block inner;
+        private final Block next;
+        private final List<CatchBlock> catchBlocks;
+        private final Block finallyBlock;
+
+        public TryBlock(final Set<RegionNode> aEntries, final Block inner, final Block next,
+                final List<CatchBlock> catchBlocks, final Block finallyBlock) {
+            super(aEntries, "T_");
+            this.inner = inner;
+            this.next = next;
+            this.catchBlocks = catchBlocks;
+            this.finallyBlock = finallyBlock;
+        }
+
+        public Block inner() {
+            return inner;
+        }
+
+        @Override
+        public Block next() {
+            return next;
+        }
+
+        @Override
+        public boolean containsMultipleBlock() {
+            if (inner.containsMultipleBlock()) {
+                return true;
+            }
+            for (final CatchBlock theCatch : catchBlocks) {
+                if (theCatch.handler.containsMultipleBlock()) {
+                    return true;
+                }
+            }
+            if (next != null) {
+                if (next.containsMultipleBlock()) {
+                    return true;
+                }
+            }
+            if (finallyBlock != null) {
+                return finallyBlock.containsMultipleBlock();
+            }
+            return false;
+        }
+
+        public List<CatchBlock> getCatchBlocks() {
+            return catchBlocks;
+        }
+
+        public Block getFinallyBlock() {
+            return finallyBlock;
         }
     }
 
@@ -121,7 +286,7 @@ public class Relooper {
         private final Block inner;
         private final Block next;
 
-        public LoopBlock(Set<RegionNode> aEntries, Block aInner, Block aNext) {
+        public LoopBlock(final Set<RegionNode> aEntries, final Block aInner, final Block aNext) {
             super(aEntries, "L_");
             inner = aInner;
             next = aNext;
@@ -134,6 +299,17 @@ public class Relooper {
         @Override
         public Block next() {
             return next;
+        }
+
+        @Override
+        public boolean containsMultipleBlock() {
+            if (inner.containsMultipleBlock()) {
+                return true;
+            }
+            if (next != null) {
+                return next.containsMultipleBlock();
+            }
+            return false;
         }
     }
 
@@ -157,7 +333,7 @@ public class Relooper {
         private final Set<Block> handlers;
         private final Block next;
 
-        public MultipleBlock(Set<RegionNode> aEntries, Set<Block> aHandlers, Block aNext) {
+        public MultipleBlock(final Set<RegionNode> aEntries, final Set<Block> aHandlers, final Block aNext) {
             super(aEntries, "M_");
             handlers = aHandlers;
             next = aNext;
@@ -171,18 +347,29 @@ public class Relooper {
         public Block next() {
             return next;
         }
+
+        @Override
+        public boolean containsMultipleBlock() {
+            return true;
+        }
     }
 
-    public Block reloop(ControlFlowGraph aGraph) {
-        Set<RegionNode> theEntries = new HashSet<>();
-        RegionNode theStart = aGraph.startNode();
+    private final CompileOptions compileOptions;
+
+    public Relooper(final CompileOptions aCompileOptions) {
+        compileOptions = aCompileOptions;
+    }
+
+    public Block reloop(final ControlFlowGraph aGraph) {
+        final Set<RegionNode> theEntries = new HashSet<>();
+        final RegionNode theStart = aGraph.startNode();
         theEntries.add(aGraph.startNode());
 
         // At this point, we use the dominated nodes of our start node as
         // the initisl "label-soup" for the Relooper. This will exclude
         // exception handler and finalize blocks from the the CFG and
         // will reduce the amount of labels to be processed(hopefully)
-        Block theBlock =  reloop(theEntries, theStart.dominatedNodes());
+        final Block theBlock = reloop(aGraph, theEntries, theStart.dominatedNodes());
 
         // At this point, we have a constructed Relooper-CFG. Now we have to replace
         // all GOTOs with either corresponding break or continue statements.
@@ -192,39 +379,88 @@ public class Relooper {
         return theBlock;
     }
 
-    private void replaceGotosIn(Block aBlock) {
+    private void replaceGotosIn(final Block aBlock) {
         replaceGotosIn(new Stack<>(), aBlock);
     }
 
-    private void replaceGotosIn(Stack<Block> aTraversalStack, Block aBlock) {
+    private void replaceGotosIn(final Stack<Block> aTraversalStack, final Block aBlock) {
         if (aBlock == null) {
             return;
         }
+        if (aBlock instanceof TryBlock) {
+            final TryBlock theTry = (TryBlock) aBlock;
+            aTraversalStack.push(theTry);
+            replaceGotosIn(aTraversalStack, theTry.inner());
+
+            if (theTry.finallyBlock != null) {
+                replaceGotosIn(aTraversalStack, theTry.finallyBlock);
+            }
+            for (final TryBlock.CatchBlock theCatch : theTry.catchBlocks) {
+                replaceGotosIn(aTraversalStack, theCatch.handler);
+            }
+
+            aTraversalStack.pop();
+            replaceGotosIn(aTraversalStack, theTry.next());
+            return;
+        }
         if (aBlock instanceof SimpleBlock) {
-            SimpleBlock theSimple = (SimpleBlock) aBlock;
+            final SimpleBlock theSimple = (SimpleBlock) aBlock;
 
             aTraversalStack.push(theSimple);
-            RegionNode theInternalLabel = theSimple.internalLabel();
-            replaceGotosIn(aTraversalStack, theSimple, theInternalLabel, theInternalLabel.getExpressions());
+            final RegionNode theInternalLabel = theSimple.internalLabel();
+            replaceGotosIn(aTraversalStack, theSimple, theInternalLabel, theSimple.expressions());
 
             replaceGotosIn(aTraversalStack, theSimple.next());
             aTraversalStack.pop();
 
-            RegionNode theNode = theSimple.internalLabel;
-            Expression theLastExpression = theNode.getExpressions().lastExpression();
+            final Expression theLastExpression = theSimple.expressions().lastExpression();
             // Breaks at the end of the internal label breaking out of the simple block
             // can be silent, they only need to set the __label__ variable
             if (theLastExpression instanceof BreakExpression) {
-                BreakExpression theBreak = (BreakExpression) theLastExpression;
+                final BreakExpression theBreak = (BreakExpression) theLastExpression;
                 if (Objects.equals(theBreak.blockToBreak().name(), theSimple.label().name())) {
                     theBreak.silent();
+
+                    // TODO: If there is only one successor
+                    // with only one precessor, its label is not required
+                }
+            }
+
+            // At this place, we check the goto labels for the blocks successors to make them available during rendering
+            // We search the successor edge
+            for (final Edge theEdge : theInternalLabel.outgoingEdges().collect(Collectors.toList())) {
+                final RegionNode theTarget = (RegionNode) theEdge.targetNode();
+                // We found the matching edge
+                if (theEdge.edgeType() == ControlFlowEdgeType.forward) {
+                    // We can only branch to the next block
+                    // We search the whole hiararchy to find the right block to break out
+                    for (int i=aTraversalStack.size() -1 ; i>= 0; i--) {
+                        final Block theNestingBlock = aTraversalStack.get(i);
+                        if (theNestingBlock.next() != null && theNestingBlock.next().entries().contains(theTarget)) {
+                            theNestingBlock.requireLabel();
+                            break;
+                        } else if (theNestingBlock.entries().contains(theTarget)) {
+                            theNestingBlock.requireLabel();
+                            break;
+                        }
+                    }
+
+                } else {
+                    // We can only branch back into the known stack of nested blocks
+                    for (final Block theNestingBlock : aTraversalStack) {
+                        if (theNestingBlock.entries().contains(theTarget) && (theNestingBlock instanceof LoopBlock)) {
+                            // We can return to the target in the hierarchy
+                            theNestingBlock.requireLabel();
+                            break;
+                        }
+                    }
                 }
             }
 
             return;
         }
         if (aBlock instanceof LoopBlock) {
-            LoopBlock theLoop = (LoopBlock) aBlock;
+            final LoopBlock theLoop = (LoopBlock) aBlock;
 
             aTraversalStack.push(theLoop);
             replaceGotosIn(aTraversalStack, theLoop.inner());
@@ -233,10 +469,21 @@ public class Relooper {
             aTraversalStack.pop();
             return;
         }
+        if (aBlock instanceof IFThenElseBlock) {
+            final IFThenElseBlock theIf = (IFThenElseBlock) aBlock;
+
+            aTraversalStack.push(theIf);
+            replaceGotosIn(aTraversalStack, theIf.getTrueBlock());
+            replaceGotosIn(aTraversalStack, theIf.getFalseBlock());
+            replaceGotosIn(aTraversalStack, theIf.next());
+            aTraversalStack.pop();
+            return;
+        }
+
         if (aBlock instanceof MultipleBlock) {
-            MultipleBlock theMultiple = (MultipleBlock) aBlock;
+            final MultipleBlock theMultiple = (MultipleBlock) aBlock;
             aTraversalStack.push(theMultiple);
-            for (Block theHandler : theMultiple.handlers()) {
+            for (final Block theHandler : theMultiple.handlers()) {
                 replaceGotosIn(aTraversalStack, theHandler);
             }
 
@@ -248,77 +495,75 @@ public class Relooper {
         throw new IllegalStateException("Don't know how to handle " + aBlock);
     }
 
-    private void replaceGotosIn(Stack<Block> aTraversalStack, SimpleBlock aCurrent, RegionNode aLabel, ExpressionList aList) {
-        for (Expression theExpression : aList.toList()) {
+    private void replaceGotosIn(final Stack<Block> aTraversalStack, final SimpleBlock aCurrent, final RegionNode aLabel, final ExpressionList aList) {
+        for (final Expression theExpression : aList.toList()) {
             if (theExpression instanceof ExpressionListContainer) {
-                ExpressionListContainer theContainer = (ExpressionListContainer) theExpression;
-                for (ExpressionList theList : theContainer.getExpressionLists()) {
+                final ExpressionListContainer theContainer = (ExpressionListContainer) theExpression;
+                for (final ExpressionList theList : theContainer.getExpressionLists()) {
                     replaceGotosIn(aTraversalStack, aCurrent, aLabel, theList);
                 }
             }
             if (theExpression instanceof GotoExpression) {
-                GotoExpression theGoto = (GotoExpression) theExpression;
+                final GotoExpression theGoto = (GotoExpression) theExpression;
                 boolean theGotoFound = false;
+
                 // We search the successor edge
-                for (Map.Entry<RegionNode.Edge, RegionNode> theSuc : aLabel.getSuccessors().entrySet()) {
-                    if (Objects.equals(theSuc.getValue().getStartAddress(), theGoto.getJumpTarget())) {
+                for (final Edge theEdge : aLabel.outgoingEdges().collect(Collectors.toList())) {
+                    final RegionNode theTarget = (RegionNode) theEdge.targetNode();
+                    if (Objects.equals(theTarget.getStartAddress(), theGoto.jumpTarget())) {
                         theGotoFound = true;
-                        RegionNode theTarget = theSuc.getValue();
                         // We found the matching edge
-                        if (theSuc.getKey().getType() == RegionNode.EdgeType.NORMAL) {
+                        if (theEdge.edgeType() == ControlFlowEdgeType.forward) {
                             // We can only branch to the next block
                             // We search the whole hiararchy to find the right block to break out
+                            guard: {
+                                for (int i = aTraversalStack.size() - 1; i >= 0; i--) {
+                                    final Block theNestingBlock = aTraversalStack.get(i);
+                                    if (theNestingBlock.next() != null && theNestingBlock.next().entries().contains(theTarget)) {
+                                        theNestingBlock.requireLabel();
+                                        final BreakExpression theBreak = new BreakExpression(theGoto.getProgram(), theGoto.getAddress(), theNestingBlock.label(), theTarget.getStartAddress());
+                                        aList.replace(theGoto, theBreak);
 
-                            boolean theSomethingFound = false;
-                            for (int i=aTraversalStack.size() -1 ; i>= 0; i--) {
-                                Block theNestingBlock = aTraversalStack.get(i);
-                                if (theNestingBlock.next() != null && theNestingBlock.next().entries().contains(theTarget)) {
-                                    theNestingBlock.requireLabel();
-                                    BreakExpression theBreak = new BreakExpression(theNestingBlock.label(), theTarget.getStartAddress());
-                                    aList.replace(theGoto, theBreak);
+                                        if (theNestingBlock.next() instanceof SimpleBlock && theNestingBlock.next().entries().size() == 1) {
+                                            theBreak.noSetRequired();
+                                        }
 
-                                    if (theNestingBlock.next() instanceof SimpleBlock && theNestingBlock.next().entries().size() == 1) {
-                                        theBreak.noSetRequired();
+                                        break guard;
+                                    } else if (theNestingBlock.entries().contains(theTarget)) {
+                                        theNestingBlock.requireLabel();
+                                        final ContinueExpression theContinue = new ContinueExpression(theGoto.getProgram(), theGoto.getAddress(), theNestingBlock.label(), theTarget.getStartAddress());
+                                        aList.replace(theGoto, theContinue);
+
+                                        break guard;
                                     }
-
-                                    theSomethingFound = true;
-                                    break;
-                                } else if (theNestingBlock.entries().contains(theTarget)) {
-                                    theNestingBlock.requireLabel();
-                                    ContinueExpression theContinue = new ContinueExpression(theNestingBlock.label(), theTarget.getStartAddress());
-                                    aList.replace(theGoto, theContinue);
-                                    theSomethingFound = true;
-                                    break;
                                 }
-                            }
 
-                            if (!theSomethingFound) {
                                 throw new IllegalStateException("Failed to jump to " + theTarget.getStartAddress().getAddress() + " from " + aCurrent.label().name() + " : no matching entry found!");
                             }
 
                         } else {
                             // We can only branch back into the known stack of nested blocks
                             boolean theSomethingFound = false;
-                            for (Block theNestingBlock : aTraversalStack) {
-                                if (theNestingBlock.entries().contains(theTarget)) {
+                            for (final Block theNestingBlock : aTraversalStack) {
+                                if (theNestingBlock.entries().contains(theTarget) && (theNestingBlock instanceof LoopBlock)) {
                                     theSomethingFound = true;
 
                                     // We can return to the target in the hierarchy
                                     theNestingBlock.requireLabel();
-                                    ContinueExpression theContinue = new ContinueExpression(theNestingBlock.label(), theTarget.getStartAddress());
+                                    final ContinueExpression theContinue = new ContinueExpression(theGoto.getProgram(), theGoto.getAddress(), theNestingBlock.label(), theTarget.getStartAddress());
                                     aList.replace(theGoto, theContinue);
                                     break;
                                 }
                             }
                             if (!theSomethingFound) {
                                 throw new IllegalStateException(
-                                        "No back edge target found for " + theTarget.getStartAddress().getAddress());
+                                        "No back edge target from " + aLabel.getStartAddress().getAddress() + " to " + theTarget.getStartAddress().getAddress());
                             }
                         }
                     }
                 }
                 if (!theGotoFound) {
-                    throw new IllegalStateException("No GOTO possible for " + theGoto.getJumpTarget().getAddress() + " in label " + aCurrent.label().name());
+                    throw new IllegalStateException("No GOTO possible for " + theGoto.jumpTarget().getAddress() + " in label " + aCurrent.label().name());
                 }
             }
         }
@@ -329,7 +574,7 @@ public class Relooper {
      * points. We wish to create a block comprised of all those
      * labels.
      */
-    private Block reloop(Set<RegionNode> aEntryLabels, Set<RegionNode> aLabelSoup) {
+    private Block reloop(final ControlFlowGraph aGraph, final Set<RegionNode> aEntryLabels, final Set<RegionNode> aLabelSoup) {
 
         // If there are no entry labels at all, we return null.
         // This will become the next value of the predecessor block and will mark the end of the
@@ -338,7 +583,7 @@ public class Relooper {
             return null;
         }
 
-        Collection<RegionNode> theJumptargets = jumpTargetsOf(aLabelSoup);
+        final Collection<RegionNode> theJumptargets = jumpTargetsOf(aLabelSoup);
 
         // If we have a single entry, and cannot return to it (by
         // some other label later on branching to it) then create a
@@ -347,9 +592,9 @@ public class Relooper {
         // for the Next block are the entries to which the internal
         // label can branch.
         if (aEntryLabels.size() == 1) {
-            RegionNode theEntry = aEntryLabels.iterator().next();
+            final RegionNode theEntry = aEntryLabels.iterator().next();
             if (!theJumptargets.contains(theEntry)) {
-                return createSimpleBlock(aEntryLabels, aLabelSoup, theEntry);
+                return createSimpleBlock(aGraph, aEntryLabels, aLabelSoup, theEntry);
             }
         }
 
@@ -368,23 +613,26 @@ public class Relooper {
             // SimpleBlock as its loop body and a next block with a block
             // the loop body can branch out to.
             if (aEntryLabels.size() == 1) {
-                RegionNode theSingleEntry = aEntryLabels.iterator().next();
+                final RegionNode theSingleEntry = aEntryLabels.iterator().next();
 
-                Set<RegionNode> theInternalLabels = theSingleEntry.dominatedNodes();
-                Set<RegionNode> theRestLabels = new HashSet<>(aLabelSoup);
+                final Set<RegionNode> theInternalLabels = theSingleEntry.dominatedNodes().stream().filter(aLabelSoup::contains).collect(
+                        Collectors.toSet());
+                final Set<RegionNode> theRestLabels = new HashSet<>(aLabelSoup);
                 theRestLabels.removeAll(theInternalLabels);
 
                 // Search for branch-outs of the current loop
-                Set<RegionNode> theRestEntries = new HashSet<>();
-                for (RegionNode theReachable : theSingleEntry.forwardReachableNodes()) {
-                    if (theRestLabels.contains(theReachable)) {
-                        theRestEntries.add(theReachable);
-                    }
+                final Set<RegionNode> theRestEntries = new HashSet<>();
+                for (final RegionNode theReachable : theSingleEntry.dominatedNodes()) {
+                    theReachable.outgoingEdges().filter(t -> t.edgeType() == ControlFlowEdgeType.forward).forEach(edge -> {
+                        if (theRestLabels.contains(edge.targetNode())) {
+                            theRestEntries.add(edge.targetNode());
+                        }
+                    });
                 }
 
-                Block theInternalBlock =
-                        createSimpleBlock(aEntryLabels, theInternalLabels, theSingleEntry);
-                Block theNextBlock = reloop(theRestEntries, theRestLabels);
+                final Block theInternalBlock =
+                        createSimpleBlock(aGraph, aEntryLabels, theInternalLabels, theSingleEntry);
+                final Block theNextBlock = reloop(aGraph, theRestEntries, theRestLabels);
 
                 return new LoopBlock(aEntryLabels, theInternalBlock, theNextBlock);
             }
@@ -400,30 +648,31 @@ public class Relooper {
         // the Handled blocks, and also labels that can be reached
         // from the Handled blocks.
         if (aEntryLabels.size() > 1) {
-            Set<RegionNode> theRest = new HashSet<>(aLabelSoup);
-            Set<RegionNode> theRestEntries = new HashSet<>();
-            Map<RegionNode, Set<RegionNode>> theEntryReaches = new HashMap<>();
+            final Set<RegionNode> theRest = new HashSet<>(aLabelSoup);
+            final Set<RegionNode> theRestEntries = new HashSet<>();
+            final Map<RegionNode, Set<RegionNode>> theEntryReaches = new HashMap<>();
 
-            Set<Block> theHandlers = new HashSet<>();
-            for (RegionNode theEntry : aEntryLabels) {
-                Set<RegionNode> theDominated = theEntry.dominatedNodes();
+            final Set<Block> theHandlers = new HashSet<>();
+            for (final RegionNode theEntry : aEntryLabels) {
+                final Set<RegionNode> theDominated = theEntry.dominatedNodes().stream().filter(aLabelSoup::contains).collect(
+                        Collectors.toSet());
                 theEntryReaches.put(theEntry, theDominated);
                 theRest.removeAll(theDominated);
 
-                Set<RegionNode> theHandlerEntries = new HashSet<>();
+                final Set<RegionNode> theHandlerEntries = new HashSet<>();
                 theHandlerEntries.add(theEntry);
-                theHandlers.add(reloop(theHandlerEntries, theDominated));
+                theHandlers.add(reloop(aGraph, theHandlerEntries, theDominated));
             }
 
-            for (Map.Entry<RegionNode, Set<RegionNode>> theHandler : theEntryReaches.entrySet()) {
-                for (RegionNode theJumpTarget : allForwardJumpTargetsOf(theHandler.getValue())) {
+            for (final Map.Entry<RegionNode, Set<RegionNode>> theHandler : theEntryReaches.entrySet()) {
+                for (final RegionNode theJumpTarget : allForwardJumpTargetsOf(theHandler.getValue())) {
                     if (theRest.contains(theJumpTarget)) {
                         theRestEntries.add(theJumpTarget);
                     }
                 }
             }
 
-            Block theNext = reloop(theRestEntries, theRest);
+            final Block theNext = reloop(aGraph, theRestEntries, theRest);
             return new MultipleBlock(aEntryLabels, theHandlers, theNext);
         }
 
@@ -432,108 +681,253 @@ public class Relooper {
         throw new IllegalStateException("What do do now?");
     }
 
-    private Block createSimpleBlock(Set<RegionNode> aEntryLabels, Set<RegionNode> aLabelSoup,
-            RegionNode theEntry) {
-        Set<RegionNode> theNextEntries = new HashSet<>();
-        Set<RegionNode> theDominated = theEntry.dominatedNodes();
-        for (Map.Entry<RegionNode.Edge, RegionNode> theSucc : theEntry.getSuccessors().entrySet()) {
-            if (theSucc.getKey().getType() == RegionNode.EdgeType.NORMAL) {
-                if (theDominated.contains(theSucc.getValue())) {
-                    theNextEntries.add(theSucc.getValue());
+    private Block createSimpleBlock(final ControlFlowGraph aGraph, final Set<RegionNode> aEntryLabels, final Set<RegionNode> aLabelSoup,
+                                    final RegionNode aEntry) {
+
+        if (compileOptions.isEnableExceptions()) {
+
+            final List<TryBlock.CatchBlock> catchBlocks = new ArrayList<>();
+            Block finallyBlock = null;
+            final List<RegionNode.ExceptionHandler> theHandlers = aGraph.exceptionHandlersStartingAt(aEntry.getStartAddress());
+            if (!theHandlers.isEmpty()) {
+                if (theHandlers.size() != 1) {
+                    throw new IllegalStateException("Overlapping exception handling regions not yet supported!");
+                }
+                final RegionNode.ExceptionHandler theSingleHandler = theHandlers.get(0);
+
+                // Ok, at this point we search for all nodes that are
+                // Covered by this exception handler
+                // They will become part of the inner block
+                final Set<RegionNode> theInnerNodes = new HashSet<>();
+                final Set<BytecodeOpcodeAddress> theIncludesHandlers = theSingleHandler.getCatchEntries().stream().map(BytecodeExceptionTableEntry::getHandlerPc).collect(
+                        Collectors.toSet());
+
+                // We collect the known finally
+                // handlers here
+                final Set<BytecodeOpcodeAddress> theFinallyHandlers = new HashSet<>();
+                for (final BytecodeExceptionTableEntry theEntry : aGraph.getProgram().getFlowInformation().getProgram().getExceptionHandlers()) {
+                    if (theIncludesHandlers.contains(theEntry.getHandlerPc())) {
+                        for (final RegionNode theInner : aLabelSoup) {
+                            if (theEntry.coveres(theInner.getStartAddress())) {
+                                theInnerNodes.add(theInner);
+                            }
+                        }
+                    } else {
+                        if (theEntry.isFinally() && theEntry.getStartPC().equals(aEntry.getStartAddress())) {
+                            theFinallyHandlers.add(theEntry.getHandlerPc());
+                        }
+                    }
+                }
+
+                // All of the label soup except the inner nodes will become part of the next block
+                final Set<RegionNode> theNextNodes = new HashSet<>(aLabelSoup);
+                theNextNodes.removeAll(theInnerNodes);
+
+                // Now we have to search for the entry nodes of the next block
+                final HashSet<RegionNode> theNextEntries = new HashSet<>();
+                for (final RegionNode theInner : theInnerNodes) {
+                    for (final Edge theEdge : theInner.outgoingEdges().collect(Collectors.toList())) {
+                        if (theNextNodes.contains(theEdge.targetNode())) {
+                            theNextEntries.add((RegionNode) theEdge.targetNode());
+                        }
+                    }
+                }
+
+                // Ok, now we compute the inner block of our try block
+                theInnerNodes.remove(aEntry);
+                final HashSet<RegionNode> theInnerEntries = new HashSet<>();
+                for (final Edge theEdge : aEntry.outgoingEdges().collect(Collectors.toList())) {
+                    if (theInnerNodes.contains(theEdge.targetNode())) {
+                        theInnerEntries.add((RegionNode) theEdge.targetNode());
+                    }
+                }
+
+                final Block theTryInner = new SimpleBlock(theInnerEntries, aEntry, reloop(aGraph, theInnerEntries, theInnerNodes));
+
+                // We finally need to compute the catchBlocks
+                final Map<BytecodeOpcodeAddress, Set<BytecodeUtf8Constant>> theAssignedHandlers = new HashMap<>();
+                for (final BytecodeExceptionTableEntry theEntry : theSingleHandler.getCatchEntries()) {
+                    if (!theEntry.isFinally()) {
+                        final Set<BytecodeUtf8Constant> theCatchTypes = theAssignedHandlers
+                                .computeIfAbsent(theEntry.getHandlerPc(), k -> new HashSet<>());
+                        theCatchTypes.add(theEntry.getCatchType().getConstant());
+                    }
+                }
+
+                for (final Map.Entry<BytecodeOpcodeAddress, Set<BytecodeUtf8Constant>> theEntry : theAssignedHandlers.entrySet()) {
+                    final Set<RegionNode> theEntries = new HashSet<>();
+                    final RegionNode theHandlerStart = aGraph.nodeStartingAt(theEntry.getKey());
+                    theEntries.add(theHandlerStart);
+
+                    final Set<RegionNode> theTagSoup = theHandlerStart.dominatedNodes();
+                    // Dominated exception handler nodes are covered here
+                    // Hence they cannot be part of the next block
+                    theNextNodes.remove(theHandlerStart);
+                    theNextEntries.remove(theHandlerStart);
+                    theNextNodes.removeAll(theTagSoup);
+                    theNextEntries.removeAll(theTagSoup);
+
+                    // If a catch or finally block branches out to the next block,
+                    // This branch will also become an entry
+                    for (final RegionNode theInner : theTagSoup) {
+                        for (final Edge theEdge : theInner.outgoingEdges().collect(Collectors.toList())) {
+                            if (theNextNodes.contains(theEdge.targetNode())) {
+                                theNextEntries.add((RegionNode) theEdge.targetNode());
+                            }
+                        }
+                    }
+
+                    final TryBlock.CatchBlock theCatchBlock = new TryBlock.CatchBlock(theEntry.getValue(),
+                            reloop(aGraph, theEntries, theTagSoup));
+
+                    catchBlocks.add(theCatchBlock);
+                }
+
+                // At this point, we have to check the finally blocks
+                if (!theFinallyHandlers.isEmpty()) {
+                    if (theFinallyHandlers.size() != 1) {
+                        throw new IllegalStateException(
+                                "More than one finally handler found ! Size = " + theFinallyHandlers.size());
+                    }
+                    final RegionNode theFinallyNode = aGraph.nodeStartingAt(new ArrayList<>(theFinallyHandlers).get(0));
+                    final Set<RegionNode> theEntries = new HashSet<>();
+                    theEntries.add(theFinallyNode);
+
+                    final Set<RegionNode> theDominated = theFinallyNode.dominatedNodes();
+
+                    finallyBlock = reloop(aGraph, theEntries, theDominated);
+
+                    // The finally nodes cannot be reached anymore
+                    theNextEntries.remove(theFinallyNode);
+                    theNextNodes.remove(theFinallyNode);
+                    theNextNodes.removeAll(theDominated);
+                }
+
+                // And of course the next block
+                final Block theTryNext;
+                if (theNextNodes.isEmpty()) {
+                    theTryNext = null;
+                } else {
+                    theTryNext = reloop(aGraph, theNextEntries, theNextNodes);
+                }
+
+                Collections.reverse(catchBlocks);
+                return new TryBlock(aEntryLabels, theTryInner, theTryNext, catchBlocks, finallyBlock);
+            }
+        }
+
+        // Search for conditional Jumps
+        final List<Expression> theExpressions = aEntry.getExpressions().toList();
+        for (int i = 0; i < theExpressions.size(); i++) {
+            final Expression theExpression = theExpressions.get(i);
+            if (theExpression instanceof IFExpression) {
+                final IFExpression theIf = (IFExpression) theExpression;
+                // Ok, we found a condition
+                if (i < theExpressions.size() - 1) {
+                    // Were are following expressions
+                    final Expression theLast = theExpressions.get(theExpressions.size() - 1);
+                    if (theLast instanceof GotoExpression) {
+                        final GotoExpression theGoto = (GotoExpression) theLast;
+                        final RegionNode theTrueBranch = aGraph.nodeStartingAt(theIf.getGotoAddress());
+                        final RegionNode theFalseBranch = aGraph.nodeStartingAt(theGoto.jumpTarget());
+                        if (theTrueBranch.isImmediatelyDominatedBy(aEntry) && theFalseBranch.isImmediatelyDominatedBy(aEntry)) {
+                            // We have a candidate!!
+                            final Value theCondition = theIf.incomingDataFlows().get(0);
+
+                            final Set<RegionNode> theNextEntries = new HashSet<>();
+                            final Set<RegionNode> theNextTagSoup = new HashSet<>(aLabelSoup);
+                            final Set<RegionNode> theTrueDominated = theTrueBranch.dominatedNodes();
+                            final Set<RegionNode> theFalseDominated = theFalseBranch.dominatedNodes();
+                            theNextTagSoup.removeAll(theTrueDominated);
+                            theNextTagSoup.removeAll(theFalseDominated);
+                            theNextTagSoup.remove(aEntry);
+
+                            // Calculate the entries for the next block
+                            for (final RegionNode theTrue : theTrueDominated) {
+                                for (final Edge theEdge : theTrue.outgoingEdges().collect(Collectors.toList())) {
+                                    final RegionNode theNode = (RegionNode) theEdge.targetNode();
+                                    if (theEdge.edgeType() == ControlFlowEdgeType.forward && theNextTagSoup.contains(theNode)) {
+                                        theNextEntries.add(theNode);
+                                    }
+                                }
+                            }
+
+                            for (final RegionNode theFalse : theFalseDominated) {
+                                for (final Edge theEdge : theFalse.outgoingEdges().collect(Collectors.toList())) {
+                                    final RegionNode theNode = (RegionNode) theEdge.targetNode();
+                                    if (theEdge.edgeType() == ControlFlowEdgeType.forward && theNextTagSoup.contains(theNode)) {
+                                        theNextEntries.add(theNode);
+                                    }
+                                }
+                            }
+
+                            final Block theTrueBranchBlock = reloop(aGraph, Collections.singleton(theTrueBranch),
+                                    theTrueDominated);
+                            final Block theFalseBranchBlock = reloop(aGraph, Collections.singleton(theFalseBranch),
+                                    theFalseDominated);
+
+                            final ExpressionList thePrelude = new ExpressionList();
+                            for (int j = 0; j < i; j++) {
+                                thePrelude.add(theExpressions.get(j));
+                            }
+
+                            Block theNextBlock = null;
+                            if (!theNextEntries.isEmpty()) {
+                                theNextBlock = reloop(aGraph, theNextEntries, theNextTagSoup);
+                            }
+
+                            return new IFThenElseBlock(thePrelude, Collections.singleton(aEntry), theCondition,
+                                    theTrueBranchBlock, theFalseBranchBlock, theNextBlock);
+                        } else if (theTrueBranch.isImmediatelyDominatedBy(aEntry)) {
+
+                            // TODO:
+
+                        } else if (theFalseBranch.isImmediatelyDominatedBy(aEntry)) {
+
+                            // TODO:
+                        }
+                    }
                 }
             }
         }
 
-        Set<RegionNode> theOtherLabels = new HashSet<>(aLabelSoup);
-        theOtherLabels.remove(theEntry);
-        return new SimpleBlock(aEntryLabels, theEntry, reloop(theNextEntries, theOtherLabels));
+        final Set<RegionNode> theNextEntries = new HashSet<>();
+        final Set<RegionNode> theDominated = aEntry.dominatedNodes();
+        for (final Edge theEdge : aEntry.outgoingEdges().collect(Collectors.toList())) {
+            if (theEdge.edgeType() == ControlFlowEdgeType.forward) {
+                final RegionNode theNode = (RegionNode) theEdge.targetNode();
+                if (theDominated.contains(theNode) && aLabelSoup.contains(theNode)) {
+                    theNextEntries.add(theNode);
+                }
+            }
+        }
+
+        final Set<RegionNode> theOtherLabels = new HashSet<>(aEntry.dominatedNodes());
+        theOtherLabels.remove(aEntry);
+        return new SimpleBlock(aEntryLabels, aEntry, reloop(aGraph, theNextEntries, theOtherLabels));
     }
 
-    private Set<RegionNode> jumpTargetsOf(Collection<RegionNode> aLabelSoup) {
-        Set<RegionNode> theResults = new HashSet<>();
-        for (RegionNode theNode : aLabelSoup) {
-            for (Map.Entry<RegionNode.Edge, RegionNode> theEntry : theNode.getSuccessors().entrySet()) {
-                if (aLabelSoup.contains(theEntry.getValue())) {
-                    theResults.add(theEntry.getValue());
+    private Set<RegionNode> jumpTargetsOf(final Collection<RegionNode> aLabelSoup) {
+        final Set<RegionNode> theResults = new HashSet<>();
+        for (final RegionNode theNode : aLabelSoup) {
+            for (final Edge theEdge : theNode.outgoingEdges().collect(Collectors.toList())) {
+                if (aLabelSoup.contains(theEdge.targetNode())) {
+                    theResults.add((RegionNode) theEdge.targetNode());
                 }
             }
         }
         return theResults;
     }
 
-    private Set<RegionNode> allForwardJumpTargetsOf(Collection<RegionNode> aLabelSoup) {
-        Set<RegionNode> theResults = new HashSet<>();
-        for (RegionNode theNode : aLabelSoup) {
-            for (Map.Entry<RegionNode.Edge, RegionNode> theEntry : theNode.getSuccessors().entrySet()) {
-                if (theEntry.getKey().getType() == RegionNode.EdgeType.NORMAL) {
-                    theResults.add(theEntry.getValue());
+    private Set<RegionNode> allForwardJumpTargetsOf(final Collection<RegionNode> aLabelSoup) {
+        final Set<RegionNode> theResults = new HashSet<>();
+        for (final RegionNode theNode : aLabelSoup) {
+            for (final Edge theEdge : theNode.outgoingEdges().collect(Collectors.toList())) {
+                if (theEdge.edgeType() == ControlFlowEdgeType.forward) {
+                    theResults.add((RegionNode) theEdge.targetNode());
                 }
             }
         }
         return theResults;
-    }
-
-    public void debugPrint(PrintStream aStream, Block aBlock) {
-        debugPrint(aStream, aBlock, 0);
-    }
-
-    private void debugPrint(PrintStream aStream, Block aBlock, int aInset) {
-        printInset(aStream, aInset);
-        if (aBlock == null) {
-            aStream.println(" NULL");
-            return;
-        }
-        if (aBlock instanceof SimpleBlock) {
-            aStream.println("SimpleBlock " + aBlock.label().name());
-            SimpleBlock theSimple = (SimpleBlock) aBlock;
-            debugPrint(aStream, aInset +1, theSimple.internalLabel().getExpressions());
-
-            debugPrint(aStream, theSimple.next(), aInset + 1);
-            return;
-        }
-        if (aBlock instanceof LoopBlock) {
-            aStream.println("Loop " + aBlock.label().name());
-            LoopBlock theLoop = (LoopBlock) aBlock;
-            debugPrint(aStream, theLoop.inner(), aInset + 1);
-            debugPrint(aStream, theLoop.next(), aInset + 1);
-            return;
-        }
-        if (aBlock instanceof MultipleBlock) {
-            aStream.println("Multiple " + aBlock.label().name());
-            MultipleBlock theMultiple = (MultipleBlock) aBlock;
-            for (Block theHandler : theMultiple.handlers()) {
-                debugPrint(aStream, theHandler, aInset + 1);
-            }
-            debugPrint(aStream, theMultiple.next, aInset + 1);
-            return;
-        }
-        throw new IllegalStateException("No handler for " + aBlock);
-    }
-
-    private void printInset(PrintStream aStream, int aInset) {
-        for (int i = 0; i < aInset; i++) {
-            aStream.print(" ");
-        }
-    }
-
-    private void debugPrint(PrintStream aStream, int aInset, ExpressionList aExpressionList) {
-        for (Expression theExpression : aExpressionList.toList()) {
-            if (theExpression instanceof BreakExpression) {
-                BreakExpression theBreak = (BreakExpression) theExpression;
-                printInset(aStream, aInset);
-                aStream.println(
-                        "Break " + theBreak.blockToBreak().name() + " and jump to " + theBreak.jumpTarget().getAddress());
-            } else if (theExpression instanceof ContinueExpression) {
-                ContinueExpression theContinue = (ContinueExpression) theExpression;
-                printInset(aStream, aInset);
-                aStream.println(
-                        "Continue at " + theContinue.labelToReturnTo().name());
-            } else if (theExpression instanceof ReturnExpression) {
-                printInset(aStream, aInset);
-                aStream.println("Return");
-            } else if (theExpression instanceof GotoExpression) {
-                throw new IllegalStateException("Goto should have been removed!");
-            }
-        }
     }
 }
