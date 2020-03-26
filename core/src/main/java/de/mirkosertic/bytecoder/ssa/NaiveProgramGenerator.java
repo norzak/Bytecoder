@@ -15,6 +15,16 @@
  */
 package de.mirkosertic.bytecoder.ssa;
 
+import java.lang.invoke.CallSite;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 import de.mirkosertic.bytecoder.classlib.Array;
 import de.mirkosertic.bytecoder.core.BytecodeArrayTypeRef;
 import de.mirkosertic.bytecoder.core.BytecodeBasicBlock;
@@ -40,6 +50,7 @@ import de.mirkosertic.bytecoder.core.BytecodeInstructionDCONST;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionDUP;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionDUP2;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionDUP2X1;
+import de.mirkosertic.bytecoder.core.BytecodeInstructionDUP2X2;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionDUPX1;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionDUPX2;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionF2Generic;
@@ -99,6 +110,7 @@ import de.mirkosertic.bytecoder.core.BytecodeInstructionPUTFIELD;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionPUTSTATIC;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionRETURN;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionSIPUSH;
+import de.mirkosertic.bytecoder.core.BytecodeInstructionSWAP;
 import de.mirkosertic.bytecoder.core.BytecodeInstructionTABLESWITCH;
 import de.mirkosertic.bytecoder.core.BytecodeIntegerConstant;
 import de.mirkosertic.bytecoder.core.BytecodeInvokeDynamicConstant;
@@ -124,17 +136,6 @@ import de.mirkosertic.bytecoder.core.BytecodeUtf8Constant;
 import de.mirkosertic.bytecoder.graph.Dominators;
 import de.mirkosertic.bytecoder.graph.Edge;
 import de.mirkosertic.bytecoder.intrinsics.Intrinsics;
-
-import java.lang.invoke.CallSite;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 public final class NaiveProgramGenerator implements ProgramGenerator {
 
@@ -174,9 +175,9 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
         BytecodeLocalVariableTableAttributeInfo theDebugInfos = null;
         if (theCode != null) {
             theDebugInfos = theCode.attributeByType(BytecodeLocalVariableTableAttributeInfo.class);
-            theProgram = new Program(debugInformationFor(aOwningClass, theCode));
+            theProgram = new Program(debugInformationFor(aOwningClass, theCode), linkerContext);
         } else {
-            theProgram = new Program(DebugInformation.empty());
+            theProgram = new Program(DebugInformation.empty(), linkerContext);
         }
 
         int theCurrentIndex = 0;
@@ -435,7 +436,7 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
             } else if (theInstruction instanceof BytecodeInstructionDUP2) {
                 final BytecodeInstructionDUP2 theINS = (BytecodeInstructionDUP2) theInstruction;
                 final Value theValue1 = aHelper.pop();
-                if (theValue1.resolveType().resolve() == TypeRef.Native.LONG || theValue1.resolveType().resolve() == TypeRef.Native.DOUBLE) {
+                if (theValue1.resolveType().resolve().isCategory2()) {
                     // Category 2
                     aHelper.push(theINS.getOpcodeAddress(), theValue1);
                     aHelper.push(theINS.getOpcodeAddress(), theValue1);
@@ -450,7 +451,7 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
             } else if (theInstruction instanceof BytecodeInstructionDUP2X1) {
                 final BytecodeInstructionDUP2X1 theINS = (BytecodeInstructionDUP2X1) theInstruction;
                 final Value theValue1 = aHelper.pop();
-                if (theValue1.resolveType().resolve() == TypeRef.Native.LONG || theValue1.resolveType().resolve() == TypeRef.Native.DOUBLE) {
+                if (theValue1.resolveType().resolve().isCategory2()) {
                     final Value theValue2 = aHelper.pop();
 
                     aHelper.push(theINS.getOpcodeAddress(), theValue1);
@@ -466,6 +467,48 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
                     aHelper.push(theINS.getOpcodeAddress(), theValue2);
                     aHelper.push(theINS.getOpcodeAddress(), theValue2);
                 }
+            } else if (theInstruction instanceof BytecodeInstructionDUP2X2) {
+                final BytecodeInstructionDUP2X2 theINS = (BytecodeInstructionDUP2X2) theInstruction;
+                final Value theValue1 = aHelper.pop();
+                if (theValue1.resolveType().resolve().isCategory2()) {
+                    // Form 2 or Form 4
+                    final Value theValue2 = aHelper.pop();
+                    if (theValue2.resolveType().resolve().isCategory2()) {
+                        // Form 4
+                        aHelper.push(theINS.getOpcodeAddress(), theValue1);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue2);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue1);
+                    } else {
+                        // Form 2
+                        final Value theValue3 = aHelper.pop();
+                        aHelper.push(theINS.getOpcodeAddress(), theValue1);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue3);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue2);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue1);
+                    }
+                } else {
+                    // Form 1 or Form 3
+                    final Value theValue2 = aHelper.pop();
+                    final Value theValue3 = aHelper.pop();
+                    if (theValue3.resolveType().resolve().isCategory2()) {
+                        // Form 3
+                        aHelper.push(theINS.getOpcodeAddress(), theValue2);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue1);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue3);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue2);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue1);
+                    } else {
+                        // Form 1
+                        final Value theValue4 = aHelper.pop();
+
+                        aHelper.push(theINS.getOpcodeAddress(), theValue2);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue1);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue4);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue3);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue2);
+                        aHelper.push(theINS.getOpcodeAddress(), theValue1);
+                    }
+                }
             } else if (theInstruction instanceof BytecodeInstructionDUPX1) {
                 final BytecodeInstructionDUPX1 theINS = (BytecodeInstructionDUPX1) theInstruction;
                 final Value theValue1 = aHelper.pop();
@@ -480,7 +523,7 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
                 final Value theValue1 = aHelper.pop();
                 final Value theValue2 = aHelper.pop();
 
-                if (theValue2.resolveType().resolve() == TypeRef.Native.LONG || theValue2.resolveType().resolve() == TypeRef.Native.DOUBLE) {
+                if (theValue2.resolveType().resolve().isCategory2()) {
                     // Form 2
                     aHelper.push(theINS.getOpcodeAddress(), theValue1);
                     aHelper.push(theINS.getOpcodeAddress(), theValue2);
@@ -660,6 +703,12 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
                 final Value theValue1 = aHelper.pop();
                 final Variable theNewVariable = aTargetBlock.newVariable(theInstruction.getOpcodeAddress(), TypeRef.toType(theINS.getType()), new BinaryExpression(aProgram, theInstruction.getOpcodeAddress(), TypeRef.toType(theINS.getType()), theValue1, BinaryExpression.Operator.ADD, theValue2));
                 aHelper.push(theINS.getOpcodeAddress(), theNewVariable);
+            } else if (theInstruction instanceof BytecodeInstructionSWAP) {
+                final BytecodeInstructionSWAP theINS = (BytecodeInstructionSWAP) theInstruction;
+                final Value theValue2 = aHelper.pop();
+                final Value theValue1 = aHelper.pop();
+                aHelper.push(theINS.getOpcodeAddress(), theValue1);
+                aHelper.push(theINS.getOpcodeAddress(), theValue2);
             } else if (theInstruction instanceof BytecodeInstructionGenericDIV) {
                 final BytecodeInstructionGenericDIV theINS = (BytecodeInstructionGenericDIV) theInstruction;
                 final Value theValue2 = aHelper.pop();
@@ -927,21 +976,17 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
                     // Check if we are constructing a new object here
                     guard: {
                         if ("<init>".equals(theMethodName)) {
-                            final List<Value> theInconingEdges = theTarget.incomingDataFlows();
-                            if (theInconingEdges.size() == 1 && theInconingEdges.get(0) instanceof NewObjectExpression) {
+                            final List<Value> theIncomingValues = theTarget.incomingDataFlows();
+                            if (theIncomingValues.size() == 1 && theIncomingValues.get(0) instanceof NewObjectExpression) {
 
-                                final Set<RegionNode> thePath = new HashSet<>();
-                                thePath.add(aTargetBlock);
-                                thePath.addAll(aTargetBlock.getPredecessorsIgnoringBackEdges());
-
-                                for (final RegionNode theNode : thePath) {
+                                for (final RegionNode theNode : aProgram.getControlFlowGraph().dominators().getPreOrder()) {
                                     for (final Expression theExpression : theNode.getExpressions().toList()) {
                                         if (theExpression instanceof VariableAssignmentExpression) {
                                             final VariableAssignmentExpression theAssignment = (VariableAssignmentExpression) theExpression;
                                             if (theAssignment.getVariable().getName().equals(theTarget.getName()) &&
                                                     theAssignment.incomingDataFlows().get(0) instanceof NewObjectExpression) {
                                                 // We have a candidate!
-                                                aTargetBlock.getExpressions().remove(theAssignment);
+                                                theNode.getExpressions().remove(theAssignment);
                                             }
                                         }
                                     }
@@ -972,7 +1017,13 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
 
             } else if (theInstruction instanceof BytecodeInstructionINVOKEVIRTUAL) {
                 final BytecodeInstructionINVOKEVIRTUAL theINS = (BytecodeInstructionINVOKEVIRTUAL) theInstruction;
-                final BytecodeObjectTypeRef theInvokedClass = BytecodeObjectTypeRef.fromUtf8Constant(theINS.getMethodReference().getClassIndex().getClassConstant().getConstant());
+                final BytecodeTypeRef theInvokedClass;
+                final BytecodeUtf8Constant theConstant = theINS.getMethodReference().getClassIndex().getClassConstant().getConstant();
+                if (theConstant.stringValue().startsWith("[")) {
+                    theInvokedClass = linkerContext.getSignatureParser().toFieldType(theConstant);
+                } else {
+                    theInvokedClass = BytecodeObjectTypeRef.fromUtf8Constant(theConstant);
+                }
                 final BytecodeMethodSignature theSignature = theINS.getMethodReference().getNameAndTypeIndex().getNameAndType().getDescriptorIndex().methodSignature();
 
                 final List<Value> theArguments = new ArrayList<>();
@@ -1072,7 +1123,7 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
                 }
 
                 aTargetBlock.getExpressions().add(new TableSwitchExpression(aProgram, theInstruction.getOpcodeAddress(), theValue, theINS.getLowValue(), theINS.getHighValue(),
-                        theDefault, theOffsets));
+                        theDefault, theINS.getDefaultJumpTarget(), theOffsets));
             } else if (theInstruction instanceof BytecodeInstructionLOOKUPSWITCH) {
                 final BytecodeInstructionLOOKUPSWITCH theINS = (BytecodeInstructionLOOKUPSWITCH) theInstruction;
                 final Value theValue = aHelper.pop();
@@ -1087,7 +1138,7 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
                     thePairs.put(thePair.getMatch(), thePairExpressions);
                 }
 
-                aTargetBlock.getExpressions().add(new LookupSwitchExpression(aProgram, theInstruction.getOpcodeAddress(), theValue, theDefault, thePairs));
+                aTargetBlock.getExpressions().add(new LookupSwitchExpression(aProgram, theInstruction.getOpcodeAddress(), theValue, theDefault, theINS.getDefaultJumpTarget(), thePairs));
             } else if (theInstruction instanceof BytecodeInstructionINVOKEDYNAMIC) {
                 final BytecodeInstructionINVOKEDYNAMIC theINS = (BytecodeInstructionINVOKEDYNAMIC) theInstruction;
 
@@ -1100,7 +1151,7 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
                 final BytecodeMethodHandleConstant theMethodRef = theBootstrapMethod.getMethodRef();
                 final BytecodeMethodRefConstant theBootstrapMethodToInvoke = (BytecodeMethodRefConstant) theMethodRef.getReferenceIndex().getConstant();
 
-                final Program theProgram = new Program(DebugInformation.empty());
+                final Program theProgram = new Program(DebugInformation.empty(), linkerContext);
                 final RegionNode theInitNode = theProgram.getControlFlowGraph().createAt(BytecodeOpcodeAddress.START_AT_ZERO, RegionNode.BlockType.NORMAL);
 
                 // Don't forget to calculate reachability and dominators here
@@ -1190,7 +1241,7 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
                         final Variable theNewVarargsArray = theInitNode.newVariable(theInstruction.getOpcodeAddress(), TypeRef.Native.REFERENCE, new NewArrayExpression(aProgram, theInstruction.getOpcodeAddress(),
                                 BytecodeObjectTypeRef.fromRuntimeClass(Object.class), new IntegerValue(theVarArgsLength)));
                         for (int i = theSignatureLength - 1; i < theArgumentsLength; i++) {
-                            final Value theVariable = theArguments.get(i);
+                            final Value theVariable = theArguments.get(theSignatureLength - 1);
                             theArguments.remove(theVariable);
                             theInitNode.getExpressions().add(new ArrayStoreExpression(aProgram, theInstruction.getOpcodeAddress(), TypeRef.Native.REFERENCE, theNewVarargsArray, new IntegerValue(i - theSignatureLength + 1), theVariable));
                         }
@@ -1216,20 +1267,7 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
 
                     for (int i=theInitSignature.getArguments().length-1;i>=0;i--) {
                         final Value theIndex = new IntegerValue(i);
-                        Value theStoredValue = aHelper.pop();
-
-                        if (theStoredValue.resolveType() == TypeRef.Native.INT) {
-                            // Create Integer object to contain int
-                            final BytecodeObjectTypeRef theType = BytecodeObjectTypeRef.fromRuntimeClass(Integer.class);
-                            final BytecodeTypeRef[] args_def = new BytecodeTypeRef[]{BytecodePrimitiveTypeRef.INT};
-                            final BytecodeMethodSignature sig = new BytecodeMethodSignature(theType, args_def);
-                            final List<Value> args = new ArrayList<>();
-                            args.add(theStoredValue);
-
-                            theStoredValue = new InvokeStaticMethodExpression(aProgram, theInstruction.getOpcodeAddress(), theType, "valueOf", sig, args);
-                            theStoredValue = aTargetBlock.newVariable(theInstruction.getOpcodeAddress(), TypeRef.Native.REFERENCE, theStoredValue);
-                        }
-
+                        final Value theStoredValue = aHelper.pop();
                         aTargetBlock.getExpressions().add(new ArrayStoreExpression(aProgram, theInstruction.getOpcodeAddress(), TypeRef.Native.REFERENCE, theArray, theIndex, theStoredValue));
                     }
 
@@ -1241,7 +1279,7 @@ public final class NaiveProgramGenerator implements ProgramGenerator {
                                             new BytecodeArrayTypeRef(BytecodeObjectTypeRef.fromRuntimeClass(Object.class), 1) }),
                             theCallsiteVariable, theInvokeArguments, false, BytecodeObjectTypeRef.fromRuntimeClass(CallSite.class));
 
-                    final Variable theInvokeExactResult = aTargetBlock.newVariable(theInstruction.getOpcodeAddress(), TypeRef.Native.REFERENCE, theInvokeValue);
+                    final Variable theInvokeExactResult = aTargetBlock.newVariable(theInstruction.getOpcodeAddress(), TypeRef.toType(theInitSignature.getReturnType()), theInvokeValue);
                     aHelper.push(theINS.getOpcodeAddress(), theInvokeExactResult);
 
                     break;

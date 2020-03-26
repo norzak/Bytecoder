@@ -27,17 +27,18 @@ public class VueDemo {
     public interface MyVueInstance extends VueInstance {
 
         @OpaqueProperty
-        void welcomemessage(String aNewMessage);
+        void welcomemessage(final String aNewMessage);
     }
 
-    public static void main(String[] args) {
-        VueBuilder<MyVueInstance> theBuilder = Vue.builder();
+    public static void main(final String[] args) {
+
+        final VueBuilder<MyVueInstance> theBuilder = Vue.builder();
         theBuilder.bindToTemplateSelector("#vuetemplate");
         theBuilder.data().setProperty("welcomemessage", "hello world!");
         theBuilder.addEventListener("clicked", new VueEventListener<MyVueInstance, ClickEvent>() {
             @Override
-            public void handle(MyVueInstance instance, ClickEvent event) {
-                instance.welcomemessage("hello world, you have clicked. Timestamp is " + System.currentTimeMillis());
+            public void handle(final MyVueInstance instance, final ClickEvent event) {
+                instance.welcomemessage(String.format("hello world, you have clicked. Timestamp is %s", System.currentTimeMillis()));
             }
         });
         MyVueInstance instance = theBuilder.build();

@@ -15,47 +15,30 @@
  */
 package de.mirkosertic.bytecoder.classlib.java.lang;
 
-import de.mirkosertic.bytecoder.api.Import;
 import de.mirkosertic.bytecoder.api.SubstitutesInClass;
 
-import java.io.ByteArrayOutputStream;
-import java.io.OutputStream;
+import java.io.FileDescriptor;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.PrintStream;
+import java.util.Properties;
 
 @SubstitutesInClass(completeReplace = true)
 public class TSystem {
 
-    public static final class ConsoleOutputStream extends OutputStream {
+    private static final Properties PROPERTIES;
 
-        private final ByteArrayOutputStream bos = new ByteArrayOutputStream();
-
-        @Import(module = "system", name = "writeCharArrayToConsole")
-        public static native void writeCharArrayToConsole(char[] aBytes);
-
-        @Override
-        public void write(final int b) {
-            if (b != '\n') {
-                bos.write(b);
-            } else {
-                final byte[] toData = bos.toByteArray();
-                final String theString = new String(toData);
-                final char[] theChars = new char[theString.length()];
-                for (int i=0;i<theString.length();i++) {
-                    theChars[i] = theString.charAt(i);
-                }
-                writeCharArrayToConsole(theChars);
-                bos.reset();
-            }
-        }
-
-        @Override
-        public void close() {
-        }
+    static {
+        PROPERTIES = new Properties();
+        PROPERTIES.setProperty("java.awt.graphicsenv", "de.mirkosertic.bytecoder.classlib.BytecoderGraphicsEnvironment");
     }
 
-    public static final PrintStream out = new PrintStream(new ConsoleOutputStream());
+    public static final InputStream in = new FileInputStream(FileDescriptor.in);
 
-    public static final PrintStream err = new PrintStream(new ConsoleOutputStream());
+    public static final PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out));
+
+    public static final PrintStream err = new PrintStream(new FileOutputStream(FileDescriptor.err));
 
     public static native long nanoTime();
 
@@ -78,14 +61,37 @@ public class TSystem {
     }
 
     public static String getProperty(final String aProperty) {
-        return null;
+        return PROPERTIES.getProperty(aProperty);
     }
 
     public static String getProperty(final String aProperty, final String aDefault) {
-        return aDefault;
+        return PROPERTIES.getProperty(aProperty, aDefault);
+    }
+
+    public static String setProperty(final String aProperty, final String value) {
+        return (String) PROPERTIES.setProperty(aProperty, value);
+    }
+
+    public static Properties getProperties() {
+        return PROPERTIES;
     }
 
     public static String lineSeparator() {
         return "\n";
+    }
+
+    public static String getenv(final String name) {
+        return null;
+    }
+
+    public static void loadLibrary(final String name) {
+        // System libraries cannot be loaded by Bytecoder.
+        // However, native parts are linked using the Bytecoder module imports
+    }
+
+    public static void exit(final int exitCode) {
+    }
+
+    public static void gc() {
     }
 }

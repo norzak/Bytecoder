@@ -104,12 +104,16 @@
                     <execution>
                         <id>java-compile</id>
                         <phase>compile</phase>
-                        <goals> <goal>compile</goal> </goals>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
                     </execution>
                     <execution>
                         <id>java-test-compile</id>
                         <phase>test-compile</phase>
-                        <goals> <goal>testCompile</goal> </goals>
+                        <goals>
+                            <goal>testCompile</goal>
+                        </goals>
                     </execution>
                 </executions>
             </plugin>
@@ -186,6 +190,18 @@
                         </configuration>
                     </execution>
                     <execution>
+                        <id>wasmllvm</id>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <mainClass>de.mirkosertic.bytecoder.integrationtest.JBox2DSimulation</mainClass>
+                            <backend>wasm_llvm</backend>
+                            <enableExceptionHandling>false</enableExceptionHandling>
+                            <filenamePrefix>bytecoder-llvm</filenamePrefix>
+                        </configuration>
+                    </execution>
+                    <execution>
                         <id>wasm-kotlin</id>
                         <goals>
                             <goal>compile</goal>
@@ -197,7 +213,6 @@
                             <filenamePrefix>bytecoder-kotlin</filenamePrefix>
                         </configuration>
                     </execution>
-
                     <execution>
                         <id>vue-wasm</id>
                         <goals>
@@ -210,7 +225,18 @@
                             <filenamePrefix>vuedemo</filenamePrefix>
                         </configuration>
                     </execution>
-
+                    <execution>
+                        <id>vue-wasmllvm</id>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <mainClass>de.mirkosertic.bytecoder.integrationtest.VueDemo</mainClass>
+                            <backend>wasm_llvm</backend>
+                            <enableExceptionHandling>false</enableExceptionHandling>
+                            <filenamePrefix>vuedemollvm</filenamePrefix>
+                        </configuration>
+                    </execution>
                     <execution>
                         <id>lua-js</id>
                         <goals>
@@ -224,7 +250,6 @@
                             <minifyCompileResult>true</minifyCompileResult>
                         </configuration>
                     </execution>
-
                     <execution>
                         <id>lua-wasm</id>
                         <goals>
@@ -237,14 +262,25 @@
                             <filenamePrefix>bytecoder-luademowasm</filenamePrefix>
                         </configuration>
                     </execution>
-
+                    <execution>
+                        <id>lua-wasmllvm</id>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <mainClass>de.mirkosertic.bytecoder.integrationtest.LuaDemo</mainClass>
+                            <backend>wasm_llvm</backend>
+                            <enableExceptionHandling>false</enableExceptionHandling>
+                            <filenamePrefix>bytecoder-luademowasmllvm</filenamePrefix>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
 
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
-                <version>3.1.1</version>
+                <version>3.1.2</version>
                 <executions>
                     <execution>
                         <id>src-dependencies</id>

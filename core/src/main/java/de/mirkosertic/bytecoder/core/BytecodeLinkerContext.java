@@ -15,13 +15,13 @@
  */
 package de.mirkosertic.bytecoder.core;
 
-import de.mirkosertic.bytecoder.api.Export;
-import de.mirkosertic.bytecoder.api.Logger;
-import de.mirkosertic.bytecoder.graph.Edge;
-
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import de.mirkosertic.bytecoder.api.Export;
+import de.mirkosertic.bytecoder.api.Logger;
+import de.mirkosertic.bytecoder.graph.Edge;
 
 public class BytecodeLinkerContext {
 
@@ -53,9 +53,9 @@ public class BytecodeLinkerContext {
 
     public BytecodeLinkedClass isLinkedOrNull(final BytecodeUtf8Constant aConstant) {
         final BytecodeObjectTypeRef theTypeRef = BytecodeObjectTypeRef.fromUtf8Constant(aConstant);
-        final List<BytecodeLinkedClass> theLinkedClass = rootNode.outgoingEdges()
+        final List<BytecodeLinkedClass> theLinkedClass = linkedClasses()
                 .filter(t -> t.targetNode().getClassName().equals(theTypeRef))
-                .map(t -> t.targetNode())
+                .map(Edge::targetNode)
                 .collect(Collectors.toList());
         if (theLinkedClass.size() > 1) {
             throw new IllegalStateException();
@@ -67,9 +67,9 @@ public class BytecodeLinkerContext {
 
     public BytecodeLinkedClass resolveClass(final BytecodeObjectTypeRef aTypeRef) {
 
-        final List<BytecodeLinkedClass> theFoundLinks = rootNode.outgoingEdges()
-                .filter(t -> t.targetNode().getClassName().equals(aTypeRef))
-                .map(t -> t.targetNode())
+        final List<BytecodeLinkedClass> theFoundLinks = linkedClasses()
+                .map(Edge::targetNode)
+                .filter(t -> t.getClassName().equals(aTypeRef))
                 .collect(Collectors.toList());
 
         if (!theFoundLinks.isEmpty()) {
@@ -78,8 +78,6 @@ public class BytecodeLinkerContext {
 
         try {
             final BytecodeClass theLoadedClass = loader.loadByteCode(aTypeRef);
-            final BytecodeLinkedClass theLinkedClass = new BytecodeLinkedClass(classIdCounter++, this, aTypeRef, theLoadedClass);
-            rootNode.addEdgeTo(BytecodeLinkedClassEdgeType.instance, theLinkedClass);
 
             BytecodeLinkedClass theParentClass = null;
             final BytecodeClassinfoConstant theSuperClass = theLoadedClass.getSuperClass();
@@ -88,9 +86,8 @@ public class BytecodeLinkerContext {
                 theParentClass = resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(theSuperClassName));
             }
 
-            if (theParentClass != null) {
-                theLinkedClass.addEdgeTo(BytecodeSubclassOfEdgeType.instance, theParentClass);
-            }
+            final BytecodeLinkedClass theLinkedClass = new BytecodeLinkedClass(theParentClass, classIdCounter++, this, aTypeRef, theLoadedClass);
+            rootNode.addEdgeTo(BytecodeLinkedClassEdgeType.instance, theLinkedClass);
 
             for (final BytecodeMethod theMethod : theLoadedClass.getMethods()) {
                 final BytecodeAnnotation theAnnotation = theMethod.getAttributes().getAnnotationByType(Export.class.getName());
@@ -104,15 +101,15 @@ public class BytecodeLinkerContext {
                 }
             }
 
-            final BytecodeMethod theMethod = theLoadedClass.classInitializerOrNull();
-            if (theMethod != null) {
-                theLinkedClass.resolveClassInitializer(theMethod);
-            }
-
             for (final BytecodeInterface theInterface : theLoadedClass.getInterfaces()) {
                 final BytecodeUtf8Constant theSuperClassName = theInterface.getClassinfoConstant().getConstant();
                 final BytecodeLinkedClass theImplementedClass = resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(theSuperClassName));
                 theLinkedClass.addEdgeTo(BytecodeImplementsEdgeType.instance, theImplementedClass);
+            }
+
+            final BytecodeMethod theMethod = theLoadedClass.classInitializerOrNull();
+            if (theMethod != null) {
+                theLinkedClass.resolveClassInitializer(theMethod);
             }
 
             logger.info("Linked  {}" ,theLinkedClass.getClassName().name());
@@ -155,14 +152,6 @@ public class BytecodeLinkerContext {
     }
 
     public List<BytecodeLinkedClass> getClassesImplementingVirtualMethod(final BytecodeVirtualMethodIdentifier aIdentifier) {
-        return linkedClasses()
-                .map(Edge::targetNode)
-                .filter(t -> !t.getBytecodeClass().getAccessFlags().isInterface())
-                .filter(t -> t.implementsMethod(aIdentifier))
-                .collect(Collectors.toList());
-    }
-
-    public List<BytecodeLinkedClass> getAllClassesAndInterfacesWithMethod(final BytecodeVirtualMethodIdentifier aIdentifier) {
         return linkedClasses()
                 .map(Edge::targetNode)
                 .filter(t -> t.implementsMethod(aIdentifier))

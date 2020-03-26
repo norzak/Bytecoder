@@ -1,6 +1,18 @@
 <html>
     <head>
-        <title>Bytecoder Lua Scripting Test</title>
+        <title>Bytecoder Lua WebAssembly-Backend Test</title>
+        <script type="application/javascript">
+            var doNotTrack = false;
+            if (!doNotTrack) {
+                (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+                    (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+                    m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+                })(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
+                ga('create', 'UA-33614060-5', 'auto');
+
+                ga('send', 'pageview');
+            }
+        </script>
     </head>
     <body>
         <h1>Bytecoder Lua Demo</h1>
@@ -36,9 +48,28 @@ Run Lua to see the output!
                 bytecoder.exports.initMemory(0);
                 console.log("Memory initialized");
                 bytecoder.exports.bootstrap(0);
+                bytecoder.initializeFileIO();
                 console.log("Bootstrapped");
                 bytecoder.exports.main(0);
                 console.log("Ready for action!");
+
+                // We have to activate the garbage collector!
+                var gcInterval = 200;
+                var gcMaxObjectsPerRun = 30;
+                var gcRunning = false;
+                var runcounter = 0;
+                setInterval(function() {
+                    if (!gcRunning) {
+                        gcRunning = true;
+                        var freed = bytecoder.exports.IncrementalGC(0, gcMaxObjectsPerRun);
+                        if (runcounter++ % 10 === 0) {
+                            var freemem = bytecoder.exports.freeMem(0);
+                            var epoch = bytecoder.exports.GCEpoch(0);
+                            console.log(freemem + " bytes free memory after GC, epoch = " + epoch);
+                        }
+                        gcRunning = false;
+                    }
+                }, gcInterval);
 
                 document.getElementById("runlua").style.display = "block";
             };

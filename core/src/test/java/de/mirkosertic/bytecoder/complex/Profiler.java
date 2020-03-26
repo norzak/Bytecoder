@@ -2,6 +2,7 @@ package de.mirkosertic.bytecoder.complex;
 
 import de.mirkosertic.bytecoder.allocator.Allocator;
 import de.mirkosertic.bytecoder.backend.CompileOptions;
+import de.mirkosertic.bytecoder.backend.CompileResult;
 import de.mirkosertic.bytecoder.backend.CompileTarget;
 import de.mirkosertic.bytecoder.backend.js.JSCompileResult;
 import de.mirkosertic.bytecoder.core.BytecodeMethodSignature;
@@ -26,10 +27,10 @@ public class Profiler {
 
             final BytecodeMethodSignature theSignature = theCompileTarget.toMethodSignature(theMethodToTest);
 
-            final CompileOptions theOptions = new CompileOptions(LOGGER, true, KnownOptimizer.ALL, true, "bytecoder", 512, 512, false, false, Allocator.passthru);
+            final CompileOptions theOptions = new CompileOptions(LOGGER, true, KnownOptimizer.ALL, true, "bytecoder", 512, 512, false, false, Allocator.passthru, new String[0], new String[0]);
             final JSCompileResult result = (JSCompileResult) theCompileTarget
                     .compile(theOptions, theClassToTest, theMethodToTest.getName(), theSignature);
-            final JSCompileResult.JSContent content = result.getContent()[0];
+            final CompileResult.StringContent content = (CompileResult.StringContent) result.getContent()[0];
         }
     }
 }

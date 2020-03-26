@@ -15,7 +15,9 @@
  */
 package de.mirkosertic.bytecoder.backend;
 
+import de.mirkosertic.bytecoder.api.ClassLibProvider;
 import de.mirkosertic.bytecoder.backend.js.JSSSACompilerBackend;
+import de.mirkosertic.bytecoder.backend.llvm.LLVMCompilerBackend;
 import de.mirkosertic.bytecoder.backend.wasm.WASMSSAASTCompilerBackend;
 import de.mirkosertic.bytecoder.classlib.VM;
 import de.mirkosertic.bytecoder.core.BytecodeArrayTypeRef;
@@ -28,9 +30,16 @@ import de.mirkosertic.bytecoder.core.BytecodeMethodSignature;
 import de.mirkosertic.bytecoder.core.BytecodeObjectTypeRef;
 import de.mirkosertic.bytecoder.core.BytecodePrimitiveTypeRef;
 import de.mirkosertic.bytecoder.core.BytecodeTypeRef;
+import de.mirkosertic.bytecoder.core.BytecodeUtf8Constant;
+import de.mirkosertic.bytecoder.graph.Edge;
 import de.mirkosertic.bytecoder.ssa.NaiveProgramGenerator;
 
+import java.io.FileDescriptor;
+import java.lang.invoke.CallSite;
 import java.lang.reflect.Method;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -50,6 +59,12 @@ public class CompileTarget {
             public CompileBackend createBackend() {
                 return new WASMSSAASTCompilerBackend(NaiveProgramGenerator.FACTORY);
             }
+        },
+        wasm_llvm {
+            @Override
+            public CompileBackend createBackend() {
+                return new LLVMCompilerBackend(NaiveProgramGenerator.FACTORY);
+            }
         };
 
         public abstract CompileBackend createBackend();
@@ -57,10 +72,12 @@ public class CompileTarget {
 
     private final CompileBackend backend;
     private final BytecodeLoader bytecodeLoader;
+    private final ClassLoader classLoader;
 
     public CompileTarget(final ClassLoader aClassLoader, final BackendType aType) {
         backend = aType.createBackend();
         bytecodeLoader = new BytecodeLoader(aClassLoader);
+        classLoader = aClassLoader;
     }
 
     public CompileResult compile(
@@ -72,11 +89,31 @@ public class CompileTarget {
                 BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[] {}));
 
         // Lambda handling
-        final BytecodeLinkedClass theCallsite = theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(VM.ImplementingCallsite.class));
+        final BytecodeLinkedClass theCallsite = theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(CallSite.class));
         theCallsite.resolveVirtualMethod("invokeExact", new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(Object.class),
                 new BytecodeTypeRef[] {new BytecodeArrayTypeRef(BytecodeObjectTypeRef.fromRuntimeClass(Object.class), 1)}));
+        theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(VM.ImplementingCallsite.class));
+
+        // We have to link character set implementations
+        // to make them available via reflection API
+        theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(new BytecodeUtf8Constant("sun/nio/cs/UTF_8")))
+                .resolveConstructorInvocation(new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[0]));
+        theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(new BytecodeUtf8Constant("sun/nio/cs/UTF_16"))).resolveConstructorInvocation(new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[0]));
+        theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(new BytecodeUtf8Constant("sun/nio/cs/ISO_8859_1"))).resolveConstructorInvocation(new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[0]));
+        theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(new BytecodeUtf8Constant("sun/nio/cs/US_ASCII"))).resolveConstructorInvocation(new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[0]));
+
+        theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(new BytecodeUtf8Constant("java/lang/CharacterDataLatin1"))).resolveConstructorInvocation(new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[0]));
+
+        // Additional classes
+        if (aOptions.getAdditionalClassesToLink() != null) {
+            for (final String theClassname : aOptions.getAdditionalClassesToLink()) {
+                theLinkerContext.resolveClass(new BytecodeObjectTypeRef(theClassname)).resolveConstructorInvocation(new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[0]));
+            }
+        }
 
         final BytecodeObjectTypeRef theTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(aClass);
+
+        theLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(FileDescriptor.class)).resolveStaticMethod("initDefaultFileHandles", new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[] {BytecodePrimitiveTypeRef.INT, BytecodePrimitiveTypeRef.INT, BytecodePrimitiveTypeRef.INT}));
 
         final BytecodeLinkedClass theClass = theLinkerContext.resolveClass(theTypeRef);
         final BytecodeMethod theMethod = theClass.getBytecodeClass().methodByNameAndSignatureOrNull(aMethodName, aSignature);
@@ -101,7 +138,7 @@ public class CompileTarget {
             // We have to link all callback implementations. They are not part of the dependency yet as
             // they are not invoked by the bytecode, but from the outside world. By adding them to the
             // dependency tree, we make sure they are available for invocation.
-            final List<BytecodeLinkedClass> theLinkedClasses = theLinkerContext.linkedClasses().map(t -> t.targetNode())
+            final List<BytecodeLinkedClass> theLinkedClasses = theLinkerContext.linkedClasses().map(Edge::targetNode)
                     .collect(Collectors.toList());
             for (final BytecodeLinkedClass theLinkedClass : theLinkedClasses) {
                 if (theLinkedClass.isCallback()) {
@@ -127,7 +164,28 @@ public class CompileTarget {
             theLinkerContext.resolveAbstractMethodsInSubclasses();
         }
 
-        return backend.generateCodeFor(aOptions, theLinkerContext, aClass, aMethodName, aSignature);
+        final CompileResult theResult = backend.generateCodeFor(aOptions, theLinkerContext, aClass, aMethodName, aSignature);
+
+        // Include all required resources from included modules
+        final List<String> resourcesToInclude = new ArrayList<>();
+        for (final ClassLibProvider provider : ClassLibProvider.availableProviders()) {
+            Collections.addAll(resourcesToInclude, provider.additionalResources());
+        }
+        // Don't forget user specific ressources
+        Collections.addAll(resourcesToInclude, aOptions.getAdditionalResources());
+
+        // Finally, we add the list of additional resources to the result
+        for (final String theResource : resourcesToInclude) {
+            final URL theUrl = classLoader.getResource(theResource);
+            if (theUrl != null) {
+                aOptions.getLogger().info("Including resource {}", theResource);
+                theResult.add(new CompileResult.URLContent(theResource, theUrl));
+            } else {
+                aOptions.getLogger().warn("Cannot find resource {}", theResource);
+            }
+        }
+
+        return theResult;
     }
 
     public BytecodeMethodSignature toMethodSignature(final Method aMethod) {

@@ -32,11 +32,12 @@ import de.mirkosertic.bytecoder.core.BytecodeMethod;
 import de.mirkosertic.bytecoder.core.BytecodeMethodSignature;
 import de.mirkosertic.bytecoder.core.BytecodeObjectTypeRef;
 import de.mirkosertic.bytecoder.core.BytecodeOpcodeAddress;
+import de.mirkosertic.bytecoder.core.BytecodePrimitiveTypeRef;
+import de.mirkosertic.bytecoder.core.BytecodeReferenceKind;
 import de.mirkosertic.bytecoder.core.BytecodeResolvedFields;
 import de.mirkosertic.bytecoder.core.BytecodeResolvedMethods;
 import de.mirkosertic.bytecoder.core.BytecodeTypeRef;
 import de.mirkosertic.bytecoder.core.BytecodeUtf8Constant;
-import de.mirkosertic.bytecoder.core.BytecodeVirtualMethodIdentifier;
 import de.mirkosertic.bytecoder.relooper.Relooper;
 import de.mirkosertic.bytecoder.ssa.ArrayEntryExpression;
 import de.mirkosertic.bytecoder.ssa.ArrayLengthExpression;
@@ -51,6 +52,7 @@ import de.mirkosertic.bytecoder.ssa.ComputedMemoryLocationReadExpression;
 import de.mirkosertic.bytecoder.ssa.ComputedMemoryLocationWriteExpression;
 import de.mirkosertic.bytecoder.ssa.ContinueExpression;
 import de.mirkosertic.bytecoder.ssa.CurrentExceptionExpression;
+import de.mirkosertic.bytecoder.ssa.DataEndExpression;
 import de.mirkosertic.bytecoder.ssa.DebugPosition;
 import de.mirkosertic.bytecoder.ssa.DirectInvokeMethodExpression;
 import de.mirkosertic.bytecoder.ssa.DoubleValue;
@@ -65,6 +67,7 @@ import de.mirkosertic.bytecoder.ssa.FloorExpression;
 import de.mirkosertic.bytecoder.ssa.GetFieldExpression;
 import de.mirkosertic.bytecoder.ssa.GetStaticExpression;
 import de.mirkosertic.bytecoder.ssa.GotoExpression;
+import de.mirkosertic.bytecoder.ssa.HeapBaseExpression;
 import de.mirkosertic.bytecoder.ssa.IFElseExpression;
 import de.mirkosertic.bytecoder.ssa.IFExpression;
 import de.mirkosertic.bytecoder.ssa.InstanceOfExpression;
@@ -79,10 +82,12 @@ import de.mirkosertic.bytecoder.ssa.MemorySizeExpression;
 import de.mirkosertic.bytecoder.ssa.MethodHandlesGeneratedLookupExpression;
 import de.mirkosertic.bytecoder.ssa.MethodParameterValue;
 import de.mirkosertic.bytecoder.ssa.MethodRefExpression;
+import de.mirkosertic.bytecoder.ssa.MethodTypeArgumentCheckExpression;
 import de.mirkosertic.bytecoder.ssa.MethodTypeExpression;
 import de.mirkosertic.bytecoder.ssa.MinExpression;
 import de.mirkosertic.bytecoder.ssa.NegatedExpression;
 import de.mirkosertic.bytecoder.ssa.NewArrayExpression;
+import de.mirkosertic.bytecoder.ssa.NewInstanceFromDefaultConstructorExpression;
 import de.mirkosertic.bytecoder.ssa.NewMultiArrayExpression;
 import de.mirkosertic.bytecoder.ssa.NewObjectAndConstructExpression;
 import de.mirkosertic.bytecoder.ssa.NewObjectExpression;
@@ -92,6 +97,7 @@ import de.mirkosertic.bytecoder.ssa.Program;
 import de.mirkosertic.bytecoder.ssa.PutFieldExpression;
 import de.mirkosertic.bytecoder.ssa.PutStaticExpression;
 import de.mirkosertic.bytecoder.ssa.RegionNode;
+import de.mirkosertic.bytecoder.ssa.ReinterpretAsNativeExpression;
 import de.mirkosertic.bytecoder.ssa.ResolveCallsiteObjectExpression;
 import de.mirkosertic.bytecoder.ssa.ReturnExpression;
 import de.mirkosertic.bytecoder.ssa.ReturnValueExpression;
@@ -103,6 +109,8 @@ import de.mirkosertic.bytecoder.ssa.ShortValue;
 import de.mirkosertic.bytecoder.ssa.SqrtExpression;
 import de.mirkosertic.bytecoder.ssa.StackTopExpression;
 import de.mirkosertic.bytecoder.ssa.StringValue;
+import de.mirkosertic.bytecoder.ssa.SuperTypeOfExpression;
+import de.mirkosertic.bytecoder.ssa.SystemHasStackExpression;
 import de.mirkosertic.bytecoder.ssa.TableSwitchExpression;
 import de.mirkosertic.bytecoder.ssa.ThrowExpression;
 import de.mirkosertic.bytecoder.ssa.TypeConversionExpression;
@@ -264,9 +272,68 @@ public class JSSSAWriter {
             print((PHIValue) aValue);
         } else if (aValue instanceof IsNaNExpression) {
             print((IsNaNExpression) aValue);
+        } else if (aValue instanceof NewInstanceFromDefaultConstructorExpression) {
+            print((NewInstanceFromDefaultConstructorExpression) aValue);
+        } else if (aValue instanceof MethodTypeArgumentCheckExpression) {
+            print((MethodTypeArgumentCheckExpression) aValue);
+        } else if (aValue instanceof ReinterpretAsNativeExpression) {
+            print((ReinterpretAsNativeExpression) aValue);
+        } else if (aValue instanceof SuperTypeOfExpression) {
+            print((SuperTypeOfExpression) aValue);
+        } else if (aValue instanceof HeapBaseExpression) {
+            print((HeapBaseExpression) aValue);
+        } else if (aValue instanceof DataEndExpression) {
+            print((DataEndExpression) aValue);
+        } else if (aValue instanceof SystemHasStackExpression) {
+            print((SystemHasStackExpression) aValue);
         } else {
             throw new IllegalStateException("Not implemented : " + aValue);
         }
+    }
+
+    private void print(final SystemHasStackExpression aExpression) {
+        writer.text("0");
+    }
+
+    private void print(final HeapBaseExpression aExpression) {
+        writer.text("0");
+    }
+
+    private void print(final DataEndExpression aExpression) {
+        writer.text("0");
+    }
+
+    private void print(final SuperTypeOfExpression aExpression) {
+        final Value theValue = aExpression.incomingDataFlows().get(0);
+        print(theValue);
+        writer.text(".").text("superClass");
+    }
+
+    private void print(final ReinterpretAsNativeExpression aExpression) {
+        final Value theValue = aExpression.incomingDataFlows().get(0);
+        print(theValue);
+    }
+
+    private void print(final MethodTypeArgumentCheckExpression aExpression) {
+        final Value theValue = aExpression.incomingDataFlows().get(0);
+        final Value theIndex = aExpression.incomingDataFlows().get(1);
+        final TypeRef.Native theExpectedType = aExpression.getExpectedType();
+        writer.text("(");
+        print(theValue);
+        writer.text(".arguments[");
+        print(theIndex);
+        writer.text("]");
+        writer.text("==='");
+        writer.text(theExpectedType.name());
+        writer.text("')");
+    }
+
+    private void print(final NewInstanceFromDefaultConstructorExpression aExpression) {
+        final Value theClass = aExpression.incomingDataFlows().get(0);
+        print(theClass);
+        writer.text(".");
+        writer.text(minifier.toMethodName("$newInstance", new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[0])));
+        writer.text("()");
     }
 
     private void print(final IsNaNExpression aExpression) {
@@ -291,7 +358,7 @@ public class JSSSAWriter {
     }
 
     private void print(final NewObjectAndConstructExpression aValue) {
-        writer.text(minifier.toClassName(aValue.getClazz())).text(".").text(minifier.toMethodName("$newInstance", aValue.getSignature())).text("(");
+        writer.text(minifier.toClassName(aValue.getClazz())).text(".").text(minifier.toSymbol("__runtimeclass")).text(".").text(minifier.toMethodName("$newInstance", aValue.getSignature())).text("(");
         final List<Value> theArguments = aValue.incomingDataFlows();
         for (int i=0;i<theArguments.size();i++) {
             if (i>0) {
@@ -333,6 +400,7 @@ public class JSSSAWriter {
     private void print(final TypeOfExpression aValue) {
         print(aValue.incomingDataFlows().get(0));
         writer.text(".").text("constructor");
+        writer.text(".").text(minifier.toSymbol("__runtimeclass"));
     }
 
     private void print(final StackTopExpression aValue) {
@@ -438,9 +506,36 @@ public class JSSSAWriter {
     private void print(final MethodRefExpression aValue) {
         final String theMethodName = aValue.getMethodName();
         final BytecodeMethodSignature theSignature = aValue.getSignature();
+
         final BytecodeLinkedClass theClass = linkerContext.resolveClass(aValue.getClassName());
-        final BytecodeMethod theMethod = theClass.getBytecodeClass().methodByNameAndSignatureOrNull(theMethodName, theSignature);
-        writer.text(minifier.toClassName(aValue.getClassName())).text(".").text(minifier.toMethodName(theMethodName, theSignature));
+
+        if (aValue.getReferenceKind() == BytecodeReferenceKind.REF_invokeStatic) {
+            writer.text(minifier.toClassName(aValue.getClassName())).text(".")
+                    .text(minifier.toMethodName(theMethodName, theSignature));
+            return;
+        }
+
+        final BytecodeResolvedMethods theMethods = theClass.resolvedMethods();
+        try {
+            final BytecodeResolvedMethods.MethodEntry theMethodEntry = theMethods.implementingClassOf(theMethodName, theSignature);
+            final BytecodeMethod theMethod = theMethodEntry.getValue();
+
+            if (theMethod.isConstructor()) {
+                if (theMethod.getSignature().getArguments().length != 0) {
+                    throw new IllegalStateException("Constructor reference with more than zero arguments is not supported!");
+                }
+                writer.text(minifier.toClassName(theMethodEntry.getProvidingClass().getClassName()))
+                        .text(".").text(minifier.toSymbol("newInstance"));
+            } else {
+                writer.text(minifier.toClassName(theMethodEntry.getProvidingClass().getClassName())).text(".")
+                        .text(minifier.toMethodName(theMethodName, theSignature));
+            }
+            return;
+        } catch (final IllegalArgumentException ex) {
+            // Nothing found
+        }
+        writer.text(minifier.toClassName(theClass.getClassName())).text(".")
+                .text(minifier.toMethodName(theMethodName, theSignature));
     }
 
     private void print(final FloorExpression aValue) {
@@ -489,7 +584,8 @@ public class JSSSAWriter {
     }
 
     private void print(final ClassReferenceValue aValue) {
-        writer.text(minifier.toClassName(aValue.getType())).text(".").text(minifier.toSymbol("init")).text("()");
+        writer.text(minifier.toClassName(aValue.getType())).text(".").text(minifier.toSymbol("init")).text("()")
+        .text(".").text(minifier.toSymbol("__runtimeclass"));
     }
 
     private void print(final InstanceOfExpression aValue) {
@@ -498,7 +594,7 @@ public class JSSSAWriter {
         print(theValue);
         writer.space().text("==").space().text("null").space().text("?").space().text("false").space().text(":");
         print(theValue);
-        writer.text(".iof(");
+        writer.text(".constructor.").text(minifier.toSymbol("__runtimeclass")).text(".iof(");
 
         final BytecodeUtf8Constant theConstant = aValue.getType().getConstant();
         if (!theConstant.stringValue().startsWith("[")) {
@@ -777,9 +873,8 @@ public class JSSSAWriter {
                 final BytecodeMethod theCallbackMethod = availableCallbacks.get(0);
                 final String theMethodName = minifier.toMethodName(theCallbackMethod.getName().stringValue(), theCallbackMethod.getSignature());
 
-                writer.text("function() {").text("var v = ");
-                print(aValue);
-                writer.text(";var args = Array.prototype.slice.call(arguments);v").text(".").text(theMethodName).text(".call(v");
+                writer.text("function() {");
+                writer.text("var args = Array.prototype.slice.call(arguments);this").text(".").text(theMethodName).text(".call(this");
                 final BytecodeTypeRef[] theArguments = theCallbackMethod.getSignature().getArguments();
                 for (int i=0;i<theArguments.length;i++) {
                     writer.text(",");
@@ -790,8 +885,10 @@ public class JSSSAWriter {
                         writer.text("args[").text("" + i).text("]");
                     }
                 }
-                writer.text(");");
-                writer.text("}");
+                writer.text(")");
+                writer.text("}.bind(");
+                print(aValue);
+                writer.text(")");
             } else {
                 throw new IllegalStateException("Type conversion to " + aTypeRef.name() + " is not supported!");
             }
@@ -1027,20 +1124,25 @@ public class JSSSAWriter {
         final Value theTarget = theIncomingData.get(0);
         final List<Value> theArguments = theIncomingData.subList(1, theIncomingData.size());
 
-        // Check if we are invoking something on an opaque type
-        final BytecodeVirtualMethodIdentifier theMethodIdentifier = linkerContext.getMethodCollection().identifierFor(theMethodName, theSignature);
-        final List<BytecodeLinkedClass> theClasses = linkerContext.getAllClassesAndInterfacesWithMethod(theMethodIdentifier);
-        if (theClasses.size() == 1) {
-            final BytecodeLinkedClass theTargetClass = theClasses.get(0);
-            final BytecodeMethod theMethod = theTargetClass.getBytecodeClass().methodByNameAndSignatureOrNull(theMethodName, theSignature);
-            if (theTargetClass.isOpaqueType() && !theMethod.isConstructor()) {
-                writeOpaqueMethodInvocation(theSignature, theTarget, theArguments, theMethod);
-                return;
+        final BytecodeTypeRef theInvokedClassName = aValue.getInvokedClass();
+        if (!theInvokedClassName.isPrimitive() && !theInvokedClassName.isArray()) {
+            final BytecodeLinkedClass theInvokedClass = linkerContext.resolveClass((BytecodeObjectTypeRef) theInvokedClassName);
+            if (theInvokedClass.isOpaqueType()) {
+                final BytecodeResolvedMethods theMethods = theInvokedClass.resolvedMethods();
+                final List<BytecodeResolvedMethods.MethodEntry> theImplMethods = theMethods.stream().filter(
+                        t -> t.getValue().getName().stringValue().equals(theMethodName) &&
+                        t.getValue().getSignature().matchesExactlyTo(theSignature))
+                        .collect(Collectors.toList());
+                if (theImplMethods.size() != 1) {
+                    throw new IllegalStateException("Cannot find unique method " + theMethodName + " with signature " + theSignature + " in " + theInvokedClassName.name());
+                }
+                final BytecodeLinkedClass theImplClass = theImplMethods.get(0).getProvidingClass();
+                final BytecodeMethod theMethod = theImplMethods.get(0).getValue();
+                if (!theMethod.isConstructor()) {
+                    writeOpaqueMethodInvocation(theSignature, theTarget, theArguments, theMethod);
+                    return;
+                }
             }
-        }
-
-        if (theClasses.stream().anyMatch(BytecodeLinkedClass::isOpaqueType)) {
-            throw new IllegalStateException("There seems to be some confusion here, either multiple OpaqueTypes with method named \"" + theMethodName + "\" or mix of Opaque and Non-Opaque virtual invocations in class list " + theClasses);
         }
 
         if (Objects.equals(aValue.getMethodName(), "invokeWithMagicBehindTheScenes")) {
@@ -1087,7 +1189,10 @@ public class JSSSAWriter {
         final BytecodeLinkedClass theLinkedClass = linkerContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(aField.getClassIndex().getClassConstant().getConstant()));
         final BytecodeResolvedFields theFields = theLinkedClass.resolvedFields();
         final BytecodeResolvedFields.FieldEntry theField = theFields.fieldByName(aField.getNameAndTypeIndex().getNameAndType().getNameIndex().getName().stringValue());
-        writer.text(minifier.toClassName(theField.getProvidingClass().getClassName())).text(".").text(minifier.toSymbol("init")).text("().").symbol(aField.getNameAndTypeIndex().getNameAndType().getNameIndex().getName().stringValue(), aPosition);
+        writer.text(minifier.toClassName(theField.getProvidingClass().getClassName()))
+                .text(".").text(minifier.toSymbol("init")).text("().")
+                .text(minifier.toSymbol("__runtimeclass")).text(".")
+                .symbol(aField.getNameAndTypeIndex().getNameAndType().getNameIndex().getName().stringValue(), aPosition);
     }
 
     private void printInstanceFieldReference(final BytecodeFieldRefConstant aField) {
@@ -1281,7 +1386,7 @@ public class JSSSAWriter {
 
             startLine().text("switch(");
             print(theValue);
-            writer.space().text("-").space().text("" + theE.getLowValue()).text(") {").newLine();
+            writer.space().text("-").space().text(" " + theE.getLowValue()).text(") {").newLine();
 
             for (final Map.Entry<Long, ExpressionList> theEntry : theE.getOffsets().entrySet()) {
 
@@ -1542,7 +1647,7 @@ public class JSSSAWriter {
                     theGuard.writer.space().text("||").space();
                 }
                 final BytecodeLinkedClass theLinkedClass = linkerContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(theInstanceCheck));
-                theGuard.writer.text("CURRENTEXCEPTION.exception.iof(").text(minifier.toClassName(theLinkedClass.getClassName())).text(")");
+                theGuard.writer.text("CURRENTEXCEPTION.exception.constructor.").text(minifier.toSymbol("__runtimeclass")).text(".iof(").text(minifier.toClassName(theLinkedClass.getClassName())).text(")");
                 first = false;
             }
 

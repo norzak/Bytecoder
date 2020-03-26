@@ -15,15 +15,22 @@
  */
 package de.mirkosertic.bytecoder.backend.js;
 
+import java.io.StringWriter;
+import java.lang.reflect.Constructor;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
 import de.mirkosertic.bytecoder.allocator.AbstractAllocator;
 import de.mirkosertic.bytecoder.api.EmulatedByRuntime;
 import de.mirkosertic.bytecoder.api.Export;
 import de.mirkosertic.bytecoder.backend.CompileBackend;
 import de.mirkosertic.bytecoder.backend.CompileOptions;
+import de.mirkosertic.bytecoder.backend.CompileResult;
 import de.mirkosertic.bytecoder.backend.ConstantPool;
 import de.mirkosertic.bytecoder.backend.SourceMapWriter;
 import de.mirkosertic.bytecoder.classlib.Array;
 import de.mirkosertic.bytecoder.classlib.ExceptionManager;
+import de.mirkosertic.bytecoder.classlib.VM;
 import de.mirkosertic.bytecoder.core.BytecodeAnnotation;
 import de.mirkosertic.bytecoder.core.BytecodeArrayTypeRef;
 import de.mirkosertic.bytecoder.core.BytecodeClassTopologicOrder;
@@ -46,9 +53,6 @@ import de.mirkosertic.bytecoder.ssa.StringValue;
 import de.mirkosertic.bytecoder.ssa.Variable;
 import de.mirkosertic.bytecoder.stackifier.HeadToHeadControlFlowException;
 import de.mirkosertic.bytecoder.stackifier.Stackifier;
-
-import java.io.StringWriter;
-import java.util.List;
 
 public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
 
@@ -74,6 +78,17 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theExceptionManager.resolveStaticMethod("pop", popExceptionSignature);
         theExceptionManager.resolveStaticMethod("lastExceptionOrNull", popExceptionSignature);
 
+        final BytecodeLinkedClass theVMClass = aLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(VM.class));
+        theVMClass.resolveStaticMethod("newStringUTF8", new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(
+                String.class), new BytecodeTypeRef[] {new BytecodeArrayTypeRef(BytecodePrimitiveTypeRef.BYTE, 1)}));
+        theVMClass.resolveStaticMethod("newByteArray", new BytecodeMethodSignature(new BytecodeArrayTypeRef(BytecodePrimitiveTypeRef.BYTE, 1), new BytecodeTypeRef[] {BytecodePrimitiveTypeRef.INT}));
+        theVMClass.resolveStaticMethod("setByteArrayEntry", new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[] {new BytecodeArrayTypeRef(BytecodePrimitiveTypeRef.BYTE, 1), BytecodePrimitiveTypeRef.INT, BytecodePrimitiveTypeRef.BYTE}));
+
+        // We need this package-private constructor in String.class for bootstrap
+        aLinkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(String.class))
+                .resolveConstructorInvocation(new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID,
+                        new BytecodeTypeRef[] {new BytecodeArrayTypeRef(BytecodePrimitiveTypeRef.BYTE, 1),BytecodePrimitiveTypeRef.BYTE}));
+
         final StringWriter theStrWriter = new StringWriter();
         final JSPrintWriter theWriter = new JSPrintWriter(theStrWriter, theMinifier, theSourceMapWriter);
         theWriter.print("'use strict';").newLine();
@@ -88,19 +103,12 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theWriter.tab(2).text("console.log(theResult);").newLine();
         theWriter.tab().text("},").newLine();
 
-        final BytecodeObjectTypeRef theStringTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(String.class);
-        final BytecodeObjectTypeRef theArrayTypeRef = BytecodeObjectTypeRef.fromRuntimeClass(Array.class);
-
-        final BytecodeMethodSignature theStringConstructorSignature = new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID,
-                new BytecodeTypeRef[]{new BytecodeArrayTypeRef(BytecodePrimitiveTypeRef.CHAR, 1)});
-
-        final BytecodeLinkedClass theStringClass = aLinkerContext.resolveClass(theStringTypeRef);
-
-        // Construct a String
-        theWriter.tab().text("newString").colon().text("function(aCharArray)").space().text("{").newLine();
-        theWriter.tab(2).text("var theBytes").assign().text(theMinifier.toClassName(theArrayTypeRef)).text(".").text(theMinifier.toSymbol("newInstance")).text("();").newLine();
-        theWriter.tab(2).text("theBytes.data").assign().text("aCharArray;").newLine();
-        theWriter.tab(2).text("return ").text(theMinifier.toClassName(theStringTypeRef)).text(".").text(theMinifier.toMethodName("$newInstance", theStringConstructorSignature)).text("(theBytes);").newLine();
+        theWriter.tab().text("newString").colon().text("function(aByteArray)").space().text("{").newLine();
+        theWriter.tab(2).text("var theBytes").assign().text("bytecoder.exports.newByteArray(aByteArray.length);").newLine();
+        theWriter.tab(2).text("for").space().text("(var i=0;i<aByteArray.length;i++)").space().text("{").newLine();
+        theWriter.tab(3).text("bytecoder.exports.setByteArrayEntry(theBytes,i,aByteArray[i]);").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("return bytecoder.exports.newStringUTF8(theBytes);").newLine();
         theWriter.tab().text("},").newLine();
 
         theWriter.tab().text("newMultiArray").colon().text("function(aDimensions,aDefault)").space().text("{").newLine();
@@ -143,7 +151,7 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theWriter.tab(2).text("if").space().text("(typeof(aBytecoderString)").space().text("===").space().text("'string')").space().text("{").newLine();
         theWriter.tab(3).text("return aBytecoderString;").newLine();
         theWriter.tab(2).text("}").newLine();
-        theWriter.tab(2).text("var theArray").assign().text("aBytecoderString.").text(theMinifier.toSymbol("data")).text(".data").text(";").newLine();
+        theWriter.tab(2).text("var theArray").assign().text("aBytecoderString.").text(theMinifier.toSymbol("value")).text(".data").text(";").newLine();
         theWriter.tab(2).text("var theResult = '';").newLine();
         theWriter.tab(2).text("for").space().text("(var i=0;i<theArray.length;i++)").space().text("{").newLine();
         theWriter.tab(3).text("theResult+=String.fromCharCode(theArray[i]);").newLine();
@@ -177,10 +185,10 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theWriter.tab().text("},").newLine();
 
         theWriter.tab().text("resolveStaticCallSiteObject").colon().text("function(aWhere,aKey,aProducerFunction)").space().text("{").newLine();
-        theWriter.tab(2).text("var resolvedCallsiteObject").assign().text("aWhere.").text(theMinifier.toSymbol("__staticCallSites")).text("[aKey];").newLine();
+        theWriter.tab(2).text("var resolvedCallsiteObject").assign().text("aWhere.").text(theMinifier.toSymbol("__runtimeclass")).text(".").text("staticCallSites").text("[aKey];").newLine();
         theWriter.tab(2).text("if").space().text("(resolvedCallsiteObject").space().text("==").space().text("null)").space().text("{").newLine();
         theWriter.tab(3).text("resolvedCallsiteObject").assign().text("aProducerFunction();").newLine();
-        theWriter.tab(3).text("aWhere.").text(theMinifier.toSymbol("__staticCallSites")).text("[aKey]").assign().text("resolvedCallsiteObject;").newLine();
+        theWriter.tab(3).text("aWhere.").text(theMinifier.toSymbol("__runtimeclass")).text(".").text("staticCallSites").text("[aKey]").assign().text("resolvedCallsiteObject;").newLine();
         theWriter.tab(2).text("}").newLine();
         theWriter.tab(2).text("return resolvedCallsiteObject;").newLine();
         theWriter.tab().text("},").newLine();
@@ -190,7 +198,281 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theWriter.tab(3).text("isBigEndian").colon().text("function()").space().text("{").newLine();
         theWriter.tab(4).text("return 1;").newLine();
         theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("toolkit").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
         theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("component").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("awtevent").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("inputevent").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("dimension").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("trayicon").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("raster").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("region").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("samplemodel").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("inflater").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("graphicsprimitivemgr").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDsClassClassClassClassClassClassClassClassClassClassClass").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("registerNativeLoops").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("filekey").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("ioutil").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("cursor").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("event").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("font").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("fontmetrics").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("insets").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("keyboardfocusmanager").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("menucomponent").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("colormodel").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("singlepixelpackedsamplemodel").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("gifimagedecoder").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("imagerepresentation").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("jpegimagedecoder").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("disposer").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("surfacedata").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("shapespaniterator").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("spancliprenderer").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDsClassClass").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("button").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("choice").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("color").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("container").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("menubar").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("menuitem").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("bufferedimage").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("indexcolormodel").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("randomaccessfile").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("bufimgsurfacedata").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDsClassClass").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("initRasterObjectINTINTINTINTINTINTIndexColorModel").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("freetypefontscaler").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDsClass").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("sunfontmanager").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("checkboxmenuitem").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("menu").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("rectangle").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("window").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("bytecomponentraster").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("bytepackedraster").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("integercomponentraster").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("shortcomponentraster").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("dialog").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("frame").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("keyevent").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("mouseevent").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("filechannelimpl").colon().text("{").newLine();
+        theWriter.tab(3).text("initIDs").colon().text("function()").space().text("{").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
 
         theWriter.tab(2).text("system").colon().text("{").newLine();
         theWriter.tab(3).text("currentTimeMillis").colon().text("function()").space().text("{").newLine();
@@ -198,9 +480,6 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theWriter.tab(3).text("},").newLine();
         theWriter.tab(3).text("nanoTime").colon().text("function()").space().text("{").newLine();
         theWriter.tab(4).text("return Date.now() * 1000000;").newLine();
-        theWriter.tab(3).text("},").newLine();
-        theWriter.tab(3).text("writeCharArrayToConsole").colon().text("function(p1)").space().text("{").newLine();
-        theWriter.tab(4).text("bytecoder.logCharArrayAsString(p1);").newLine();
         theWriter.tab(3).text("},").newLine();
         theWriter.tab(2).text("},").newLine();
 
@@ -222,6 +501,36 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theWriter.tab(3).text("},").newLine();
         theWriter.tab(3).text("createInt8ArrayINT").colon().text("function(p1)").space().text("{").newLine();
         theWriter.tab(4).text("return new Int8Array(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("float").colon().text("{").newLine();
+        theWriter.tab(3).text("floatToRawIntBitsFLOAT").colon().text("function(value)").space().text("{").newLine();
+        theWriter.tab(4).text("var fl = new Float32Array(1);").newLine();
+        theWriter.tab(4).text("fl[0] = value;").newLine();
+        theWriter.tab(4).text("var br = new Int32Array(fl.buffer);").newLine();
+        theWriter.tab(4).text("return br[0];").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("intBitsToFloatINT").colon().text("function(value)").space().text("{").newLine();
+        theWriter.tab(4).text("var fl = new Int32Array(1);").newLine();
+        theWriter.tab(4).text("fl[0] = value;").newLine();
+        theWriter.tab(4).text("var br = new Float32Array(fl.buffer);").newLine();
+        theWriter.tab(4).text("return br[0];").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("double").colon().text("{").newLine();
+        theWriter.tab(3).text("doubleToRawLongBitsDOUBLE").colon().text("function(value)").space().text("{").newLine();
+        theWriter.tab(4).text("var fl = new Float64Array(1);").newLine();
+        theWriter.tab(4).text("fl[0] = value;").newLine();
+        theWriter.tab(4).text("var br = new BigInt64Array(fl.buffer);").newLine();
+        theWriter.tab(4).text("return br[0];").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("longBitsToDoubleINT").colon().text("function(value)").space().text("{").newLine();
+        theWriter.tab(4).text("var fl = new BigInt64Array(1);").newLine();
+        theWriter.tab(4).text("fl[0] = value;").newLine();
+        theWriter.tab(4).text("var br = new Float64Array(fl.buffer);").newLine();
+        theWriter.tab(4).text("return br[0];").newLine();
         theWriter.tab(3).text("},").newLine();
         theWriter.tab(2).text("},").newLine();
 
@@ -274,6 +583,9 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theWriter.tab(3).text("minINTINT").colon().text("function(p1,p2)").space().text("{").newLine();
         theWriter.tab(4).text("return Math.min(p1,p2);").newLine();
         theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("minLONGLONG").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.min(p1,p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
         theWriter.tab(3).text("minFLOATFLOAT").colon().text("function(p1,p2)").space().text("{").newLine();
         theWriter.tab(4).text("return Math.min(p1,p2);").newLine();
         theWriter.tab(3).text("},").newLine();
@@ -291,6 +603,18 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theWriter.tab(3).text("},").newLine();
         theWriter.tab(3).text("logDOUBLE").colon().text("function(p1)").space().text("{").newLine();
         theWriter.tab(4).text("return Math.log(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("powDOUBLEDOUBLE").colon().text("function(p1,p2)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.pow(p1,p2);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("acosDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.acos(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("atan2DOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.atan2(p1);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("cbrtDOUBLE").colon().text("function(p1)").space().text("{").newLine();
+        theWriter.tab(4).text("return Math.cbrt(p1);").newLine();
         theWriter.tab(3).text("},").newLine();
         theWriter.tab(2).text("},").newLine();
 
@@ -326,17 +650,222 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theWriter.tab(4).text("return console;").newLine();
         theWriter.tab(3).text("},").newLine();
         theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("unixfilesystem").space().text(":").space().text("{").newLine();
+        theWriter.tab(3).text("getBooleanAttributes0String").colon().text("function(path)").space().text("{").newLine();
+
+        theWriter.tab(4).text("var jsPath").assign().text("bytecoder.toJSString(path);").newLine();
+        theWriter.tab(4).text("try").space().text("{").newLine();
+        theWriter.tab(5).text("var request").assign().text("new XMLHttpRequest();").newLine();
+        theWriter.tab(5).text("request.open('HEAD',jsPath,false);").newLine();
+        theWriter.tab(5).text("request.send(null);").newLine();
+        theWriter.tab(5).text("if").space().text("(request.status").space().text("==").space().text("200)").space().text("{").newLine();
+        theWriter.tab(6).text("var length").assign().text("request.getResponseHeader('content-length');").newLine();
+        theWriter.tab(6).text("return 0x01;").newLine();
+        theWriter.tab(5).text("}").newLine();
+        theWriter.tab(5).text("return 0;").newLine();
+        theWriter.tab(4).text("}").space().text("catch(e)").space().text("{").newLine();
+        theWriter.tab(5).text("return 0;").newLine();
+        theWriter.tab(4).text("}").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("nullpointerexception").space().text(":").space().text("{").newLine();
+        theWriter.tab(3).text("getExtendedNPEMessage").colon().text("function(handle, data, offset, length)").space().text("{").newLine();
+        theWriter.tab(4).text("return null;").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("fileoutputstream").space().text(":").space().text("{").newLine();
+        theWriter.tab(3).text("writeBytesLONGL1BYTEINTINT").colon().text("function(handle, data, offset, length)").space().text("{").newLine();
+        theWriter.tab(4).text("bytecoder.filehandles[handle].writeBytesLONGL1BYTEINTINT(handle,data,offset,length);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("writeIntLONGINT").colon().text("function(handle, value)").space().text("{").newLine();
+        theWriter.tab(4).text("bytecoder.filehandles[handle].writeIntLONGINT(handle,value);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("close0LONG").colon().text("function(handle)").space().text("{").newLine();
+        theWriter.tab(4).text("bytecoder.filehandles[handle].close0LONG(handle);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
+        theWriter.tab(2).text("fileinputstream").space().text(":").space().text("{").newLine();
+        theWriter.tab(3).text("open0String").colon().text("function(name)").space().text("{").newLine();
+        theWriter.tab(4).text("return bytecoder.openForRead(bytecoder.toJSString(name));").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("read0LONG").colon().text("function(handle)").space().text("{").newLine();
+        theWriter.tab(4).text("return bytecoder.filehandles[handle].read0LONG(handle);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("readBytesLONGL1BYTEINTINT").colon().text("function(handle,data,offset,length)").space().text("{").newLine();
+        theWriter.tab(4).text("return bytecoder.filehandles[handle].readBytesLONGL1BYTEINTINT(handle,data,offset,length);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("close0LONG").colon().text("function(handle)").space().text("{").newLine();
+        theWriter.tab(4).text("bytecoder.filehandles[handle].close0LONG(handle);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("skip0LONGLONG").colon().text("function(handle,amount)").space().text("{").newLine();
+        theWriter.tab(4).text("return bytecoder.filehandles[handle].skip0LONGLONG(handle,amount);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("available0LONG").colon().text("function(handle)").space().text("{").newLine();
+        theWriter.tab(4).text("return bytecoder.filehandles[handle].available0LONG(handle);").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(2).text("},").newLine();
+
         theWriter.tab(1).text("},").newLine();
+
+        theWriter.tab().text("filehandles").colon().text("[],").newLine();
 
         theWriter.tab().text("exports").colon().text("{},").newLine();
 
         theWriter.tab().text("stringpool").colon().text("[],").newLine();
 
         theWriter.tab().text("memory").colon().text("[],").newLine();
+        theWriter.tab().text("openForRead").colon().space().text("function(path)").space().text("{").newLine();
+        theWriter.tab(2).text("try").space().text("{").newLine();
+        theWriter.tab(3).text("var request").assign().text("new XMLHttpRequest();").newLine();
+        theWriter.tab(3).text("request.open('GET',path,false);").newLine();
+        theWriter.tab(3).text("request.overrideMimeType('text\\/plain; charset=x-user-defined');").newLine();
+        theWriter.tab(3).text("request.send(null);").newLine();
+        theWriter.tab(3).text("if").space().text("(request.status==200)").space().text("{").newLine();
+        theWriter.tab(4).text("var length").assign().text("request.getResponseHeader('content-length');").newLine();
+        theWriter.tab(4).text("var responsetext").assign().text("request.response;").newLine();
+        theWriter.tab(4).text("var buf = new ArrayBuffer(responsetext.length);").newLine();
+        theWriter.tab(4).text("var bufView = new Uint8Array(buf);").newLine();
+        theWriter.tab(4).text("for (var i=0, strLen=responsetext.length; i<strLen; i++) {").newLine();
+        theWriter.tab(5).text("bufView[i] = responsetext.charCodeAt(i) & 0xff;").newLine();
+        theWriter.tab(4).text("}").newLine();
+        theWriter.tab(4).text("var handle = bytecoder.filehandles.length;").newLine();
+        theWriter.tab(4).text("bytecoder.filehandles[handle] = {").newLine();
+        theWriter.tab(5).text("currentpos: 0,").newLine();
+        theWriter.tab(5).text("data: bufView,").newLine();
+        theWriter.tab(5).text("size: length,").newLine();
+        theWriter.tab(5).text("skip0LONGLONG: function(handle,amount) {").newLine();
+        theWriter.tab(6).text("var remaining = this.size - this.currentpos;").newLine();
+        theWriter.tab(6).text("var possible = Math.min(remaining, amount);").newLine();
+        theWriter.tab(6).text("this.currentpos+=possible;").newLine();
+        theWriter.tab(6).text("return possible;").newLine();
+        theWriter.tab(5).text("},").newLine();
+        theWriter.tab(5).text("available0LONG: function(handle) {").newLine();
+        theWriter.tab(6).text("return this.size - this.currentpos;").newLine();
+        theWriter.tab(5).text("},").newLine();
+        theWriter.tab(5).text("read0LONG: function(handle) {").newLine();
+        theWriter.tab(6).text("return this.data[this.currentpos++];").newLine();
+        theWriter.tab(5).text("},").newLine();
+        theWriter.tab(5).text("readBytesLONGL1BYTEINTINT: function(handle,target,offset,length) {").newLine();
+        theWriter.tab(6).text("if (length === 0) {return 0;}").newLine();
+        theWriter.tab(6).text("var remaining = this.size - this.currentpos;").newLine();
+        theWriter.tab(6).text("var possible = Math.min(remaining, length);").newLine();
+        theWriter.tab(6).text("if (possible === 0) {return -1;}").newLine();
+        theWriter.tab(6).text("for (var j=0;j<possible;j++) {").newLine();
+        theWriter.tab(7).text("target.data[offset++]=this.data[this.currentpos++];").newLine();
+        theWriter.tab(6).text("}").newLine();
+        theWriter.tab(6).text("return possible;").newLine();
+        theWriter.tab(5).text("}").newLine();
+        theWriter.tab(4).text("};").newLine();
+        theWriter.tab(4).text("return handle;").newLine();
+        theWriter.tab(3).text("}").newLine();
+        theWriter.tab(3).text("return -1;").newLine();
+        theWriter.tab(2).text("} catch(e) {").newLine();
+        theWriter.tab(3).text("return -1;").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab().text("},").newLine();
+
+        theWriter.tab().text("initializeFileIO: function() {").newLine();
+        theWriter.tab(2).text("var stddin = {").newLine();
+        theWriter.tab(2).text("};").newLine();
+        theWriter.tab(2).text("var stdout = {").newLine();
+        theWriter.tab(3).text("buffer: \"\",").newLine();
+        theWriter.tab(3).text("writeBytesLONGL1BYTEINTINT: function(handle, data, offset, length) {").newLine();
+        theWriter.tab(4).text("if (length > 0) {").newLine();
+        theWriter.tab(5).text("var array = new Uint8Array(length);").newLine();
+        theWriter.tab(5).text("for (var i = 0; i < length; i++) {").newLine();
+        theWriter.tab(6).text("array[i] = data.data[i];").newLine();
+        theWriter.tab(5).text("}").newLine();
+        theWriter.tab(5).text("var asstring = String.fromCharCode.apply(null, array);").newLine();
+        theWriter.tab(5).text("for (var i=0;i<asstring.length;i++) {").newLine();
+        theWriter.tab(6).text("var c = asstring.charAt(i);").newLine();
+        theWriter.tab(6).text("if (c == '\\n') {").newLine();
+        theWriter.tab(7).text("console.log(stdout.buffer);").newLine();
+        theWriter.tab(7).text("stdout.buffer=\"\";").newLine();
+        theWriter.tab(6).text("} else {").newLine();
+        theWriter.tab(7).text("stdout.buffer = stdout.buffer.concat(c);").newLine();
+        theWriter.tab(6).text("}").newLine();
+        theWriter.tab(5).text("}").newLine();
+        theWriter.tab(4).text("}").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("close0LONG: function(handle) {").newLine();
+        theWriter.tab(3).text("},").newLine();
+        theWriter.tab(3).text("writeIntLONGINT: function(handle,value) {").newLine();
+        theWriter.tab(4).text("var c = String.fromCharCode(value);").newLine();
+        theWriter.tab(4).text("if (c == '\\n') {").newLine();
+        theWriter.tab(5).text("console.log(stdout.buffer);").newLine();
+        theWriter.tab(5).text("stdout.buffer=\"\";").newLine();
+        theWriter.tab(4).text("} else {").newLine();
+        theWriter.tab(5).text("stdout.buffer = stdout.buffer.concat(c);").newLine();
+        theWriter.tab(4).text("}").newLine();
+        theWriter.tab(3).text("}").newLine();
+        theWriter.tab(2).text("};").newLine();
+        theWriter.tab(2).text("bytecoder.filehandles[0] = stddin;").newLine();
+        theWriter.tab(2).text("bytecoder.filehandles[1] = stdout;").newLine();
+        theWriter.tab(2).text("bytecoder.filehandles[2] = stdout;").newLine();
+        theWriter.tab(2).text("bytecoder.exports.initDefaultFileHandles(0,1,2);").newLine();
+        theWriter.tab().text("},").newLine();
 
         theWriter.text("};").newLine();
 
         final String theGetNameMethodName = theMinifier.toMethodName("getName", new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(String.class), new BytecodeTypeRef[0]));
+        final String theGetClassLoaderMethodName = theMinifier.toMethodName("getClassLoader", new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(ClassLoader.class), new BytecodeTypeRef[0]));
+        final String theGetClassLoaderMethodName0 = theMinifier.toMethodName("getClassLoader0", new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(ClassLoader.class), new BytecodeTypeRef[0]));
+        final String theHashCodeMethodName = theMinifier.toMethodName("hashCode", new BytecodeMethodSignature(BytecodePrimitiveTypeRef.INT, new BytecodeTypeRef[0]));
+        final String theIsAssignableFromMethodName = theMinifier.toMethodName("isAssignableFrom", new BytecodeMethodSignature(BytecodePrimitiveTypeRef.BOOLEAN, new BytecodeTypeRef[] {BytecodeObjectTypeRef.fromRuntimeClass(Class.class)}));
+        final String theGetConstructorMethodName = theMinifier.toMethodName("getConstructor", new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(
+                Constructor.class), new BytecodeTypeRef[] {new BytecodeArrayTypeRef(BytecodeObjectTypeRef.fromRuntimeClass(Class.class), 1)}));
+
+        // We need the runtimeclass logic
+        theWriter.text("var ").text(theMinifier.toSymbol("RuntimeClass")).assign().text("function()").space().text("{").newLine();
+        theWriter.tab(1).text("var C").assign().text("function(classNameIndex,superClass,implementedTypes)").space().text("{").newLine();
+        theWriter.tab(2).text("this.classNameIndex").assign().text("classNameIndex;").newLine();
+        theWriter.tab(2).text("this.superClass").assign().text("superClass;").newLine();
+        theWriter.tab(2).text("this.implementedTypes").assign().text("implementedTypes;").newLine();
+        theWriter.tab(2).text("this.staticCallSites").assign().text("[];").newLine();
+        theWriter.tab(1).text("};").newLine();
+        theWriter.tab(1).text("C.prototype.").text(theGetNameMethodName).assign().text("function()").space().text("{").newLine();
+        theWriter.tab(2).text("return bytecoder.stringpool[this.classNameIndex];").newLine();
+        theWriter.tab(1).text("};").newLine();
+        theWriter.tab(1).text("C.prototype.").text(theHashCodeMethodName).assign().text("function()").space().text("{").newLine();
+        theWriter.tab(2).text("return this.").text(theGetNameMethodName).text("().").text(theHashCodeMethodName).text("();").newLine();
+        theWriter.tab(1).text("};").newLine();
+        theWriter.tab(1).text("C.prototype.").text(theIsAssignableFromMethodName).assign().text("function(aOtherType)").space().text("{").newLine();
+
+        theWriter.tab(2).text("for (var i=0;i<aOtherType.implementedTypes.length;i++) {").newLine();
+        theWriter.tab(3).text("if (aOtherType.implementedTypes[i].").text(theMinifier.toSymbol("__runtimeclass")).text(" === this) {").newLine();
+        theWriter.tab(4).text("return true;").newLine();
+        theWriter.tab(3).text("}").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("return false;").newLine();
+        theWriter.tab(1).text("};").newLine();
+
+        theWriter.tab().text("C.prototype.").text("iof").assign().text("function(aType)").space().text("{").newLine();
+        theWriter.tab(2).text("for (var i=0;i<this.implementedTypes.length;i++) {").newLine();
+        theWriter.tab(3).text("if (this.implementedTypes[i].").text(theMinifier.toSymbol("__runtimeclass")).text(" === aType.").text(theMinifier.toSymbol("__runtimeclass")).text(") {").newLine();
+        theWriter.tab(4).text("return true;").newLine();
+        theWriter.tab(3).text("}").newLine();
+        theWriter.tab(2).text("}").newLine();
+        theWriter.tab(2).text("return false;").newLine();
+        theWriter.tab().text("};").newLine();
+
+        theWriter.tab().text("C.prototype.").text(theGetClassLoaderMethodName).assign().text("function()").space().text("{").newLine();
+        theWriter.tab(2).text("return null;").newLine();
+        theWriter.tab().text("};").newLine();
+
+        theWriter.tab().text("C.prototype.").text(theGetClassLoaderMethodName0).assign().text("function()").space().text("{").newLine();
+        theWriter.tab(2).text("return null;").newLine();
+        theWriter.tab().text("};").newLine();
+
+        theWriter.tab().text("C.prototype.").text(theGetConstructorMethodName).assign().text("function(args)").space().text("{").newLine();
+        theWriter.tab(2).text("return ").text(theMinifier.toClassName(BytecodeObjectTypeRef.fromRuntimeClass(Class.class))).text(".prototype.").text(theGetConstructorMethodName).text(".call(this, args);").newLine();
+        theWriter.tab().text("};").newLine();
+
+        theWriter.tab(1).text("return C;").newLine();
+        theWriter.text("}();").newLine();
 
         final ConstantPool thePool = new ConstantPool();
 
@@ -361,25 +890,35 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
             }
 
             // Framework-Specific methods
-            theWriter.tab().text("var ").text(theMinifier.toSymbol("$INITIALIZED")).assign().text("false;").newLine();
-
-            if (!theLinkedClass.getBytecodeClass().getAccessFlags().isInterface()) {
-                theWriter.tab().text("var ").text(theMinifier.toSymbol("__implementedTypes")).assign().text("[");
-                boolean first = true;
-                for (final BytecodeLinkedClass theType : theLinkedClass.getImplementingTypes()) {
-                    if (!first) {
-                        theWriter.print(",");
-                    }
-                    first = false;
-                    if (theType.getUniqueId() == theLinkedClass.getUniqueId()) {
-                        theWriter.print("C");
-                    } else {
-                        theWriter.print(theMinifier.toClassName(theType.getClassName()));
-                    }
-                }
-                theWriter.text("];").newLine();
+            theWriter.tab().text("C.").text(theMinifier.toSymbol("__runtimeclass")).assign().text("new ").symbol("RuntimeClass", null).text("(");
+            // Classname index
+            theWriter.text("" + thePool.register(new StringValue(theLinkedClass.getClassName().name())));
+            theWriter.text(",");
+            // Superclass reference
+            if (!theLinkedClass.getClassName().name().equals(Object.class.getName())) {
+                final BytecodeLinkedClass theSuperClass = theLinkedClass.getSuperClass();
+                theWriter.text(theMinifier.toClassName(theSuperClass.getClassName())).text(".").text(theMinifier.toSymbol("__runtimeclass"));
+            } else {
+                theWriter.text("null");
             }
-            theWriter.tab().text("C.").text(theMinifier.toSymbol("__staticCallSites")).assign().text("[];").newLine();
+            // Implemented types
+            theWriter.text(",[");
+            boolean first = true;
+            for (final BytecodeLinkedClass theType : theLinkedClass.getImplementingTypes()) {
+                if (!first) {
+                    theWriter.print(",");
+                }
+                first = false;
+                if (theType.getUniqueId() == theLinkedClass.getUniqueId()) {
+                    theWriter.print("C");
+                } else {
+                    theWriter.print(theMinifier.toClassName(theType.getClassName()));
+                }
+            }
+
+            theWriter.text("]);").newLine();
+
+            theWriter.tab().text("var ").text(theMinifier.toSymbol("$INITIALIZED")).assign().text("false;").newLine();
 
             // Init function
             theWriter.tab().text("C.").text(theMinifier.toSymbol("init")).assign().text("function()").space().text("{").newLine();
@@ -400,7 +939,7 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
                         theSignature.append(i);
                     }
 
-                    theWriter.tab(3).text("C.").text(theMinifier.toMethodName("$newInstance", theMethod.getSignature())).assign().text("function(").text(theSignature.toString()).text(")").space().text("{").newLine();
+                    theWriter.tab(3).text("C.").text(theMinifier.toSymbol("__runtimeclass")).text(".").text(theMinifier.toMethodName("$newInstance", theMethod.getSignature())).assign().text("function(").text(theSignature.toString()).text(")").space().text("{").newLine();
                     theWriter.tab(4).text("var ").text(theMinifier.toSymbol("instance")).assign().text("new C();").newLine();
 
                     theWriter.tab(4).text(theMinifier.toSymbol("instance")).text(".").text("$").text(Integer.toString(theLinkedClass.getUniqueId())).text(theMinifier.toMethodName(theMethod.getName().stringValue(), theMethod.getSignature()))
@@ -458,7 +997,7 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
                         theSignature.append("p");
                         theSignature.append(i);
                     }
-                    theWriter.tab().text("C.").text(theMinifier.toMethodName("$newInstance", theMethod.getSignature())).assign().text("function(").text(theSignature.toString()).text(")").space().text("{").newLine();
+                    theWriter.tab().text("C.").text(theMinifier.toSymbol("__runtimeclass")).text(".").text(theMinifier.toMethodName("$newInstance", theMethod.getSignature())).assign().text("function(").text(theSignature.toString()).text(")").space().text("{").newLine();
                     theWriter.tab(2).text("C.").text(theMinifier.toSymbol("init")).text("();").newLine();
                     theWriter.tab(2).text("var ").text(theMinifier.toSymbol("instance")).assign().text("new C();").newLine();
 
@@ -495,12 +1034,12 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
                             if (theFieldType.isPrimitive()) {
                                 final BytecodePrimitiveTypeRef thePrimitive = (BytecodePrimitiveTypeRef) theFieldType;
                                 if (thePrimitive == BytecodePrimitiveTypeRef.BOOLEAN) {
-                                    theWriter.tab().text("C.").symbol(aFieldEntry.getValue().getName().stringValue(), null).assign().text("false;").newLine();
+                                    theWriter.tab().text("C.").text(theMinifier.toSymbol("__runtimeclass")).text(".").symbol(aFieldEntry.getValue().getName().stringValue(), null).assign().text("false;").newLine();
                                 } else {
-                                    theWriter.tab().text("C.").symbol(aFieldEntry.getValue().getName().stringValue(), null).assign().text("0;").newLine();
+                                    theWriter.tab().text("C.").text(theMinifier.toSymbol("__runtimeclass")).text(".").symbol(aFieldEntry.getValue().getName().stringValue(), null).assign().text("0;").newLine();
                                 }
                             } else {
-                                theWriter.tab().text("C.").symbol(aFieldEntry.getValue().getName().stringValue(), null).assign().text("null;").newLine();
+                                theWriter.tab().text("C.").text(theMinifier.toSymbol("__runtimeclass")).text(".").symbol(aFieldEntry.getValue().getName().stringValue(), null).assign().text("null;").newLine();
                             }
                         }
                     });
@@ -525,26 +1064,39 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
                         });
             }
 
-            if (!theLinkedClass.getBytecodeClass().getAccessFlags().isInterface()) {
-                theWriter.tab().text("C.prototype.").text("iof").assign().text("function(aType)").space().text("{").newLine();
-                theWriter.tab(2).text("return ").text(theMinifier.toSymbol("__implementedTypes")).text(".includes(aType);").newLine();
-                theWriter.tab().text("};").newLine();
-
-                theWriter.tab().text("C.").text(theGetNameMethodName).assign().text("function()").space().text("{").newLine();
-                if (!theLinkedClass.getClassName().name().equals("java.lang.Class")) {
-                    theWriter.tab(2).text("return bytecoder.stringpool[").text("" + thePool.register(new StringValue(ConstantPool.simpleClassName(theLinkedClass.getClassName().name())))).text("];").newLine();
-                } else {
-                    theWriter.tab(2).text("return this.").text(theGetNameMethodName).text("();").newLine();
-                }
-                theWriter.tab().text("};").newLine();
-            }
-
             theMethods.stream().forEach(aEntry -> {
                 final BytecodeMethod theMethod = aEntry.getValue();
                 final BytecodeMethodSignature theCurrentMethodSignature = theMethod.getSignature();
 
                 // If the method is provided by the runtime, we do not need to generate the implementation
                 if (null != theMethod.getAttributes().getAnnotationByType(EmulatedByRuntime.class.getName())) {
+
+                    if (aEntry.getProvidingClass().getClassName().equals(BytecodeObjectTypeRef.fromRuntimeClass(Class.class))
+                        && theMethod.getName().stringValue().equals("forName")
+                        && theMethod.getSignature().matchesExactlyTo(BytecodeLinkedClass.CLASS_FOR_NAME_SIGNATURE)) {
+
+                        // Special method: we resolve a runtime class by name here
+                        theWriter.tab().text("C.");
+
+                        final String theJSMethodName = theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature);
+
+                        theWriter.text(theJSMethodName).assign().text("function(className,resolve,classloader)").space().text("{").newLine();
+                        theWriter.tab(2).text("var jsClassName").assign().text("bytecoder.toJSString(className);").newLine();
+
+                        // We search for all non abstract non interface classes
+                        theOrderedClasses.getClassesInOrder().stream().forEach(search -> {
+                            if (!search.getBytecodeClass().getAccessFlags().isAbstract() && !search.getBytecodeClass().getAccessFlags().isInterface()) {
+                                final String theSearchClassName = theMinifier.toClassName(search.getClassName());
+                                theWriter.tab(2).text("if").space().text("(jsClassName").space().text("===").space().text("'").text(search.getClassName().name()).text("') return ").text(theSearchClassName).text(".").text(theMinifier.toSymbol("__runtimeclass")).text(";").newLine();
+                            }
+                        });
+
+                        theWriter.tab(2).text("throw new Error();").newLine();
+                        theWriter.tab().text("};").newLine();
+
+                        theWriter.tab().text("C.").text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature)).text(".static").assign().text("true;").newLine();
+                    }
+
                     return;
                 }
 
@@ -582,35 +1134,38 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
                 }
 
                 final StringBuilder theArguments = new StringBuilder();
-                boolean first = true;
+                boolean myfirst = true;
                 for (final Variable theVariable : theSSAProgram.getArguments()) {
                     if (!Variable.THISREF_NAME.equals(theVariable.getName())) {
-                        if (!first) {
+                        if (!myfirst) {
                             theArguments.append(',');
                         }
                         theArguments.append(theMinifier.toVariableName(theVariable.getName()));
-                        first = false;
+                        myfirst = false;
                     }
                 }
 
                 if (theMethod.getAccessFlags().isNative()) {
-                    if (null != theLinkedClass.getBytecodeClass().getAttributes()
-                            .getAnnotationByType(EmulatedByRuntime.class.getName())) {
+                    if (theLinkedClass.emulatedByRuntime()) {
                         return;
                     }
 
-                    final BytecodeImportedLink theLink = theLinkedClass.linkfor(theMethod);
+                    final BytecodeImportedLink theLink = theLinkedClass.linkFor(theMethod);
 
-                    if (theMethod.getAccessFlags().isStatic()) {
-                        theWriter.tab().text("C.");
-                    } else {
-                        theWriter.tab().text("C.prototype.");
-                    }
-                    theWriter.text(theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature))
+                    theWriter.tab().text("C.");
+
+                    final String theJSMethodName = theMinifier.toMethodName(theMethod.getName().stringValue(), theCurrentMethodSignature);
+
+                    theWriter.text(theJSMethodName)
                             .assign().text("function(").text(theArguments.toString()).text(")").space().text("{").newLine();
 
                     theWriter.tab(2).text("return bytecoder.imports.").text(theLink.getModuleName()).text(".").text(theLink.getLinkName()).text("(").text(theArguments.toString()).text(");").newLine();
                     theWriter.tab().text("};").newLine();
+
+                    if (!theMethod.getAccessFlags().isStatic()) {
+                        theWriter.tab().text("C.prototype.").text(theJSMethodName).assign().text("C.").text(theJSMethodName).text(";").newLine();
+                    }
+
                     return;
                 }
 
@@ -636,7 +1191,7 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
                 theWriter.flush();
 
                 // Perform register allocation
-                final AbstractAllocator theAllocator = aOptions.getAllocator().allocate(theSSAProgram, t -> t.resolveType(), aLinkerContext);
+                final AbstractAllocator theAllocator = aOptions.getAllocator().allocate(theSSAProgram, Variable::resolveType, aLinkerContext);
 
                 final JSSSAWriter theVariablesWriter = new JSSSAWriter(aOptions, theSSAProgram, 2, theWriter, aLinkerContext, thePool, false, theMinifier, theAllocator);
                 theVariablesWriter.printRegisterDeclarations();
@@ -691,12 +1246,8 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         });
 
         theWriter.text("bytecoder.bootstrap").assign().text("function()").space().text("{").newLine();
-        final List<StringValue> theValues = thePool.stringValues();
-        for (int i=0; i<theValues.size(); i++) {
-            final StringValue theValue = theValues.get(i);
-            theWriter.tab().text("bytecoder.stringpool[").text("" + i).text("]").assign().text("bytecoder.newString(").text(toArray(theValue.getStringValue())).text(");").newLine();
-        }
 
+        // String initialization depends on exports, so we have to declare them first
         theOrderedClasses.getClassesInOrder().forEach(aEntry -> {
             final BytecodeResolvedMethods theMethods = aEntry.resolvedMethods();
             theMethods.stream().forEach(eMethod -> {
@@ -717,6 +1268,14 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
             });
         });
 
+        final List<StringValue> theValues = thePool.stringValues();
+        for (int i=0; i<theValues.size(); i++) {
+            final StringValue theValue = theValues.get(i);
+            theWriter.tab().text("bytecoder.stringpool[").text("" + i).text("]").assign().text("bytecoder.newString(").text(toArray(theValue.getStringValue())).text(");").newLine();
+        }
+
+        theWriter.tab().text("bytecoder.initializeFileIO();").newLine();
+
         theWriter.text("}").newLine();
 
         theWriter.flush();
@@ -724,17 +1283,18 @@ public class JSSSACompilerBackend implements CompileBackend<JSCompileResult> {
         theStrWriter.append(System.lineSeparator()).append("//# sourceMappingURL=").append(aOptions.getFilenamePrefix()).append(".js.map");
 
         return new JSCompileResult(theMinifier,
-                new JSCompileResult.JSContent(aOptions.getFilenamePrefix() + ".js", theStrWriter.toString()),
-                new JSCompileResult.JSContent(aOptions.getFilenamePrefix() + ".js.map", theSourceMapWriter.toSourceMap(aOptions.getFilenamePrefix() + ".js")));
+                new CompileResult.StringContent(aOptions.getFilenamePrefix() + ".js", theStrWriter.toString()),
+                new CompileResult.StringContent(aOptions.getFilenamePrefix() + ".js.map", theSourceMapWriter.toSourceMap(aOptions.getFilenamePrefix() + ".js")));
     }
 
     public String toArray(final String aData) {
+        final byte[] theUTF8Data = aData.getBytes(StandardCharsets.ISO_8859_1);
         final StringBuilder theResult = new StringBuilder("[");
-        for (int i=0;i<aData.length();i++) {
+        for (int i=0;i<theUTF8Data.length;i++) {
             if (i>0) {
                 theResult.append(",");
             }
-            theResult.append((int) aData.charAt(i));
+            theResult.append(theUTF8Data[i]);
         }
         theResult.append("]");
         return theResult.toString();

@@ -34,8 +34,15 @@ import java.util.stream.Collectors;
 public class BytecodeLinkedClass extends Node<Node, EdgeType> {
 
     public static final BytecodeMethodSignature GET_CLASS_SIGNATURE = new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(Class.class), new BytecodeTypeRef[0]);
+    public static final BytecodeMethodSignature GET_CLASSLOADER_SIGNATURE = new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(ClassLoader.class), new BytecodeTypeRef[0]);
     public static final BytecodeMethodSignature DESIRED_ASSERTION_STATUS_SIGNATURE = new BytecodeMethodSignature(BytecodePrimitiveTypeRef.BOOLEAN, new BytecodeTypeRef[0]);
     public static final BytecodeMethodSignature GET_ENUM_CONSTANTS_SIGNATURE = new BytecodeMethodSignature(new BytecodeArrayTypeRef(BytecodeObjectTypeRef.fromRuntimeClass(Object.class), 1), new BytecodeTypeRef[0]);
+    public static final BytecodeMethodSignature CLASS_FOR_NAME_SIGNATURE = new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(Class.class), new BytecodeTypeRef[] {
+            BytecodeObjectTypeRef.fromRuntimeClass(String.class),
+            BytecodePrimitiveTypeRef.BOOLEAN,
+            BytecodeObjectTypeRef.fromRuntimeClass(ClassLoader.class),
+    });
+    public static final BytecodeMethodSignature GET_SUPERCLASS_SIGNATURE = new BytecodeMethodSignature(BytecodeObjectTypeRef.fromRuntimeClass(Class.class), new BytecodeTypeRef[0]);
 
     private final int uniqueId;
     private final BytecodeObjectTypeRef className;
@@ -45,12 +52,19 @@ public class BytecodeLinkedClass extends Node<Node, EdgeType> {
     private Boolean opaque;
     private Boolean callback;
     private Boolean event;
+    private Set<BytecodeVirtualMethodIdentifier> implementedIdentifiersCache;
+    private final BytecodeLinkedClass superClass;
 
-    public BytecodeLinkedClass(final int aUniqueId, final BytecodeLinkerContext aLinkerContext, final BytecodeObjectTypeRef aClassName, final BytecodeClass aBytecodeClass) {
+    public BytecodeLinkedClass(final BytecodeLinkedClass aSuperclass, final int aUniqueId, final BytecodeLinkerContext aLinkerContext, final BytecodeObjectTypeRef aClassName, final BytecodeClass aBytecodeClass) {
         uniqueId = aUniqueId;
         className = aClassName;
         bytecodeClass = aBytecodeClass;
         linkerContext = aLinkerContext;
+        superClass = aSuperclass;
+
+        if (superClass != null) {
+            addEdgeTo(BytecodeSubclassOfEdgeType.instance, superClass);
+        }
     }
 
     public boolean isOpaqueType() {
@@ -133,8 +147,7 @@ public class BytecodeLinkedClass extends Node<Node, EdgeType> {
     }
 
     public BytecodeLinkedClass getSuperClass() {
-        return (BytecodeLinkedClass) singleOutgoingNodeMatching(
-                BytecodeSubclassOfEdgeType.filter()).orElse(null);
+        return superClass;
     }
 
     public void resolveClassInitializer(final BytecodeMethod aMethod) {
@@ -230,6 +243,32 @@ public class BytecodeLinkedClass extends Node<Node, EdgeType> {
         return theMap;
     }
 
+    public BytecodeVTable resolveVTable() {
+
+        final BytecodeLinkedClass theSuperclass = getSuperClass();
+        final BytecodeVTable theTable = theSuperclass != null ? theSuperclass.resolveVTable() : new BytecodeVTable();
+
+        for (final BytecodeLinkedClass theImplementedInterface : getImplementingTypes(false, false)) {
+            theImplementedInterface.outgoingEdges(BytecodeProvidesMethodEdgeType.filter()).forEach(c -> {
+                final BytecodeLinkedClass theClass = (BytecodeLinkedClass) c.sourceNode();
+                final BytecodeMethod theMethod = (BytecodeMethod) c.targetNode();
+                if (!theMethod.isClassInitializer() && !theMethod.isConstructor() && !theMethod.getAccessFlags().isStatic()) {
+                    theTable.register(theMethod, theClass);
+                }
+            });
+        }
+
+        outgoingEdges(BytecodeProvidesMethodEdgeType.filter()).forEach(c -> {
+            final BytecodeLinkedClass theClass = (BytecodeLinkedClass) c.sourceNode();
+            final BytecodeMethod theMethod = (BytecodeMethod) c.targetNode();
+            if (!theMethod.isClassInitializer() && !theMethod.isConstructor() && !theMethod.getAccessFlags().isStatic()) {
+                theTable.register(theMethod, theClass);
+            }
+        });
+
+        return theTable;
+    }
+
     public BytecodeResolvedMethods resolvedMethods() {
         final BytecodeLinkedClass theSuperclass = getSuperClass();
         final BytecodeResolvedMethods theMap = theSuperclass != null ? theSuperclass.resolvedMethods() : new BytecodeResolvedMethods();
@@ -267,10 +306,14 @@ public class BytecodeLinkedClass extends Node<Node, EdgeType> {
             return true;
         }
 
+        boolean somethingFound = false;
+
         // Try to find default methods and also mark usage
         // of interface methods
         for (final BytecodeLinkedClass theImplementedInterface : getImplementingTypes(false, false)) {
-            theImplementedInterface.resolveVirtualMethod(aMethodName, aSignature);
+            if (theImplementedInterface.resolveVirtualMethod(aMethodName, aSignature)) {
+                somethingFound = true;
+            }
         }
 
         final BytecodeMethod theMethod = bytecodeClass.methodByNameAndSignatureOrNull(aMethodName, aSignature);
@@ -282,21 +325,22 @@ public class BytecodeLinkedClass extends Node<Node, EdgeType> {
             addEdgeTo(BytecodeProvidesMethodEdgeType.instance, theMethod);
 
             resolveMethodSignatureAndBody(theMethod);
-
-            return true;
+            somethingFound = true;
         }
 
         final BytecodeLinkedClass theSuperClass = getSuperClass();
         if (theSuperClass != null) {
-            return theSuperClass.resolveVirtualMethod(aMethodName, aSignature);
+            if (theSuperClass.resolveVirtualMethod(aMethodName, aSignature)) {
+                return true;
+            }
         }
 
-        return false;
+        return somethingFound;
     }
 
     public boolean resolveConstructorInvocation(final BytecodeMethodSignature aSignature) {
 
-        // Do we aready have a link?
+        // Do we already have a link?
         if (outgoingEdges(BytecodeProvidesMethodEdgeType.filter())
                 .map(t -> (BytecodeMethod) t.targetNode())
                 .anyMatch(t -> t.isConstructor() && t.getSignature().matchesExactlyTo(aSignature))) {
@@ -419,7 +463,7 @@ public class BytecodeLinkedClass extends Node<Node, EdgeType> {
         return aFullQualifiedClassName;
     }
 
-    public BytecodeImportedLink linkfor(final BytecodeMethod aMethod) {
+    public BytecodeImportedLink linkFor(final BytecodeMethod aMethod) {
         final BytecodeAnnotation theImportAnnotation = aMethod.getAttributes().getAnnotationByType(Import.class.getName());
         if (theImportAnnotation == null) {
             final String theClassName = simpleClassNameOf(className.name());
@@ -448,16 +492,25 @@ public class BytecodeLinkedClass extends Node<Node, EdgeType> {
             final BytecodeResolvedMethods theResolvedMethods = theClass.resolvedMethods();
             final List<BytecodeMethod> theInstanceMethods = theResolvedMethods.stream().filter(t -> !t.getValue().getAccessFlags().isPrivate() && !t.getValue().getAccessFlags().isStatic()).map(BytecodeResolvedMethods.MethodEntry::getValue).collect(Collectors.toList());
             for (final BytecodeMethod theMethod : theInstanceMethods) {
-                BytecodeLinkedClass.this.resolveVirtualMethod(theMethod.getName().stringValue(), theMethod.getSignature());
+                if (!BytecodeLinkedClass.this.resolveVirtualMethod(theMethod.getName().stringValue(), theMethod.getSignature())) {
+                    throw new IllegalStateException("Cannot find method " + theMethod.getName() + " with signature " + theMethod.getSignature() + " in class " + theClass.getClassName().name());
+                }
             }
         }
     }
 
     public boolean implementsMethod(final BytecodeVirtualMethodIdentifier aIdentifier) {
         // Do we already have a link?
-        return outgoingEdges(BytecodeProvidesMethodEdgeType.filter())
-                .map(t -> (BytecodeMethod) t.targetNode())
-                .map(t -> linkerContext.getMethodCollection().identifierFor(t)).anyMatch(t -> Objects.equals(t, aIdentifier));
+        if (implementedIdentifiersCache == null) {
+            implementedIdentifiersCache = outgoingEdges(
+                    BytecodeProvidesMethodEdgeType.filter())
+                    .map(t -> (BytecodeMethod) t.targetNode())
+                    .filter(t -> !t.getAccessFlags().isAbstract())
+                    .map(t -> linkerContext.getMethodCollection().identifierFor(t))
+                    .collect(Collectors.toSet());
+        }
+
+        return implementedIdentifiersCache.contains(aIdentifier);
     }
 
     @Override

@@ -63,7 +63,7 @@ public class BytecoderMavenMojo extends AbstractMojo {
     protected String mainClass;
 
     /**
-     * Backend to be used.
+     * Backend to be used, can be either js,wasm or wasm_llvm.
      */
     @Parameter(required = true, defaultValue = "js")
     protected String backend;
@@ -72,7 +72,7 @@ public class BytecoderMavenMojo extends AbstractMojo {
      * The build target directory.
      */
     @Parameter(defaultValue = "${project.build.directory}")
-    protected String buldDirectory;
+    protected String buildDirectory;
 
     /**
      * Shall debug output be generated?
@@ -128,9 +128,21 @@ public class BytecoderMavenMojo extends AbstractMojo {
     @Parameter(required = false, defaultValue = "linear")
     protected String registerAllocator;
 
+    /**
+     * List of full qualified class names to be linked beside the statically referenced ones.
+     */
+    @Parameter(required = false)
+    protected String[] additionalClassesToLink = new String[0];
+
+    /**
+     * A list of classpath resources to be included into the build.
+     */
+    @Parameter(required = false)
+    protected String[] additionalResources = new String[0];
+
     @Override
     public void execute() throws MojoExecutionException {
-        final File theBaseDirectory = new File(buldDirectory);
+        final File theBaseDirectory = new File(buildDirectory);
         final File theBytecoderDirectory = new File(theBaseDirectory, "bytecoder");
         theBytecoderDirectory.mkdirs();
 
@@ -143,7 +155,7 @@ public class BytecoderMavenMojo extends AbstractMojo {
             final BytecodeMethodSignature theSignature = new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID,
                     new BytecodeTypeRef[] { new BytecodeArrayTypeRef(BytecodeObjectTypeRef.fromRuntimeClass(String.class), 1) });
 
-            final CompileOptions theOptions = new CompileOptions(new Slf4JLogger(), debugOutput, KnownOptimizer.valueOf(optimizationLevel), enableExceptionHandling, filenamePrefix, wasmInitialPages, wasmMaximumPages, minifyCompileResult, preferStackifier, Allocator.valueOf(registerAllocator));
+            final CompileOptions theOptions = new CompileOptions(new Slf4JLogger(), debugOutput, KnownOptimizer.valueOf(optimizationLevel), enableExceptionHandling, filenamePrefix, wasmInitialPages, wasmMaximumPages, minifyCompileResult, preferStackifier, Allocator.valueOf(registerAllocator), additionalClassesToLink, additionalResources);
             final CompileResult theCode = theCompileTarget.compile(theOptions, theTargetClass, "main", theSignature);
             for (final CompileResult.Content content : theCode.getContent()) {
                 final File theBytecoderFileName = new File(theBytecoderDirectory, content.getFileName());
@@ -171,25 +183,16 @@ public class BytecoderMavenMojo extends AbstractMojo {
     protected final ClassLoader prepareClassLoader() throws MojoExecutionException {
         try {
             final List<URL> theURLs = new ArrayList<>();
-            final StringBuilder theClassPath = new StringBuilder();
             for (final Artifact artifact : project.getArtifacts()) {
                 if (!isSupportedScope(artifact.getScope())) {
                     continue;
                 }
                 final File file = artifact.getFile();
-                if (0 < theClassPath.length()) {
-                    theClassPath.append(':');
-                }
-                theClassPath.append(file.getPath());
                 theURLs.add(file.toURI().toURL());
             }
-            if (0 < theClassPath.length()) {
-                theClassPath.append(':');
-            }
-            theClassPath.append(classFiles.getPath());
             theURLs.add(classFiles.toURI().toURL());
 
-            return new URLClassLoader(theURLs.toArray(new URL[theURLs.size()]),
+            return new URLClassLoader(theURLs.toArray(new URL[0]),
                     getClass().getClassLoader());
         } catch (final MalformedURLException e) {
             throw new MojoExecutionException("Cannot create classloader", e);

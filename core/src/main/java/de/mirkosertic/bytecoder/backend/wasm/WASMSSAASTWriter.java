@@ -18,6 +18,7 @@ package de.mirkosertic.bytecoder.backend.wasm;
 import de.mirkosertic.bytecoder.allocator.AbstractAllocator;
 import de.mirkosertic.bytecoder.allocator.Register;
 import de.mirkosertic.bytecoder.backend.CompileOptions;
+import de.mirkosertic.bytecoder.backend.NativeMemoryLayouter;
 import de.mirkosertic.bytecoder.backend.wasm.ast.Block;
 import de.mirkosertic.bytecoder.backend.wasm.ast.Callable;
 import de.mirkosertic.bytecoder.backend.wasm.ast.Container;
@@ -49,6 +50,7 @@ import de.mirkosertic.bytecoder.core.BytecodeMethod;
 import de.mirkosertic.bytecoder.core.BytecodeMethodSignature;
 import de.mirkosertic.bytecoder.core.BytecodeObjectTypeRef;
 import de.mirkosertic.bytecoder.core.BytecodePrimitiveTypeRef;
+import de.mirkosertic.bytecoder.core.BytecodeReferenceKind;
 import de.mirkosertic.bytecoder.core.BytecodeResolvedFields;
 import de.mirkosertic.bytecoder.core.BytecodeResolvedMethods;
 import de.mirkosertic.bytecoder.core.BytecodeTypeRef;
@@ -68,6 +70,7 @@ import de.mirkosertic.bytecoder.ssa.ComputedMemoryLocationReadExpression;
 import de.mirkosertic.bytecoder.ssa.ComputedMemoryLocationWriteExpression;
 import de.mirkosertic.bytecoder.ssa.ContinueExpression;
 import de.mirkosertic.bytecoder.ssa.CurrentExceptionExpression;
+import de.mirkosertic.bytecoder.ssa.DataEndExpression;
 import de.mirkosertic.bytecoder.ssa.DirectInvokeMethodExpression;
 import de.mirkosertic.bytecoder.ssa.DoubleValue;
 import de.mirkosertic.bytecoder.ssa.EnumConstantsExpression;
@@ -81,6 +84,7 @@ import de.mirkosertic.bytecoder.ssa.FloorExpression;
 import de.mirkosertic.bytecoder.ssa.GetFieldExpression;
 import de.mirkosertic.bytecoder.ssa.GetStaticExpression;
 import de.mirkosertic.bytecoder.ssa.GotoExpression;
+import de.mirkosertic.bytecoder.ssa.HeapBaseExpression;
 import de.mirkosertic.bytecoder.ssa.IFElseExpression;
 import de.mirkosertic.bytecoder.ssa.IFExpression;
 import de.mirkosertic.bytecoder.ssa.InstanceOfExpression;
@@ -94,19 +98,23 @@ import de.mirkosertic.bytecoder.ssa.MaxExpression;
 import de.mirkosertic.bytecoder.ssa.MemorySizeExpression;
 import de.mirkosertic.bytecoder.ssa.MethodHandlesGeneratedLookupExpression;
 import de.mirkosertic.bytecoder.ssa.MethodRefExpression;
+import de.mirkosertic.bytecoder.ssa.MethodTypeArgumentCheckExpression;
 import de.mirkosertic.bytecoder.ssa.MethodTypeExpression;
 import de.mirkosertic.bytecoder.ssa.MinExpression;
 import de.mirkosertic.bytecoder.ssa.NegatedExpression;
 import de.mirkosertic.bytecoder.ssa.NewArrayExpression;
+import de.mirkosertic.bytecoder.ssa.NewInstanceFromDefaultConstructorExpression;
 import de.mirkosertic.bytecoder.ssa.NewMultiArrayExpression;
 import de.mirkosertic.bytecoder.ssa.NewObjectAndConstructExpression;
 import de.mirkosertic.bytecoder.ssa.NewObjectExpression;
 import de.mirkosertic.bytecoder.ssa.NullValue;
 import de.mirkosertic.bytecoder.ssa.PHIValue;
 import de.mirkosertic.bytecoder.ssa.Program;
+import de.mirkosertic.bytecoder.ssa.PtrOfExpression;
 import de.mirkosertic.bytecoder.ssa.PutFieldExpression;
 import de.mirkosertic.bytecoder.ssa.PutStaticExpression;
 import de.mirkosertic.bytecoder.ssa.RegionNode;
+import de.mirkosertic.bytecoder.ssa.ReinterpretAsNativeExpression;
 import de.mirkosertic.bytecoder.ssa.ResolveCallsiteObjectExpression;
 import de.mirkosertic.bytecoder.ssa.ReturnExpression;
 import de.mirkosertic.bytecoder.ssa.ReturnValueExpression;
@@ -117,6 +125,8 @@ import de.mirkosertic.bytecoder.ssa.ShortValue;
 import de.mirkosertic.bytecoder.ssa.SqrtExpression;
 import de.mirkosertic.bytecoder.ssa.StackTopExpression;
 import de.mirkosertic.bytecoder.ssa.StringValue;
+import de.mirkosertic.bytecoder.ssa.SuperTypeOfExpression;
+import de.mirkosertic.bytecoder.ssa.SystemHasStackExpression;
 import de.mirkosertic.bytecoder.ssa.TableSwitchExpression;
 import de.mirkosertic.bytecoder.ssa.ThrowExpression;
 import de.mirkosertic.bytecoder.ssa.TypeConversionExpression;
@@ -136,6 +146,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Stack;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 import static de.mirkosertic.bytecoder.backend.wasm.ast.ConstExpressions.call;
 import static de.mirkosertic.bytecoder.backend.wasm.ast.ConstExpressions.currentMemory;
@@ -165,8 +176,10 @@ public class WASMSSAASTWriter {
     public static final String INSTANCEOFSUFFIX = "__instanceof";
     public static final String EXCEPTION_NAME = "EX";
     public static final String CLASSINITSUFFIX = "__init";
+    public static final String NEWINSTANCEHELPER = "NEWINSTANCEHELPER";
 
     public interface Resolver {
+        Global runtimeClassFor(BytecodeObjectTypeRef aObjectType);
         Global globalForStringFromPool(StringValue aValue);
         Function resolveCallsiteBootstrapFor(BytecodeClass owningClass, String callsiteId, Program program, RegionNode bootstrapMethod);
     }
@@ -191,13 +204,13 @@ public class WASMSSAASTWriter {
     private final Module module;
     private final CompileOptions compileOptions;
     private final List<Register> stackRegister;
-    private final WASMMemoryLayouter memoryLayouter;
+    private final NativeMemoryLayouter memoryLayouter;
     private boolean labelRequired;
     final AtomicBoolean stackifierEnabled;
     private final AbstractAllocator allocator;
 
     public WASMSSAASTWriter(
-            final Resolver aResolver, final BytecodeLinkerContext aLinkerContext, final Module aModule, final CompileOptions aOptions, final Program aProgram, final WASMMemoryLayouter aMemoryLayouter, final ExportableFunction aFunction, final AbstractAllocator aAllocator) {
+            final Resolver aResolver, final BytecodeLinkerContext aLinkerContext, final Module aModule, final CompileOptions aOptions, final Program aProgram, final NativeMemoryLayouter aMemoryLayouter, final ExportableFunction aFunction, final AbstractAllocator aAllocator) {
         resolver = aResolver;
         linkerContext = aLinkerContext;
         function = aFunction;
@@ -219,7 +232,7 @@ public class WASMSSAASTWriter {
     }
 
     private WASMSSAASTWriter(
-            final Resolver aResolver, final BytecodeLinkerContext aLinkerContext, final Module aModule, final CompileOptions aOptions, final WASMMemoryLayouter aMemoryLayouter, final ExportableFunction aFunction, final LabeledContainer aContainer,
+            final Resolver aResolver, final BytecodeLinkerContext aLinkerContext, final Module aModule, final CompileOptions aOptions, final NativeMemoryLayouter aMemoryLayouter, final ExportableFunction aFunction, final LabeledContainer aContainer,
             final List<Register> aStackRegister, final boolean aLabelRequired, final Expressions aFlow, final AtomicBoolean aStackifierEnabled,
             final AbstractAllocator aAllocator) {
         resolver = aResolver;
@@ -523,12 +536,6 @@ public class WASMSSAASTWriter {
             final WASMValue theValue = toValue(theException);
             flow.throwException(module.getEvents().eventIndex().byLabel(EXCEPTION_NAME), Collections.singletonList(theValue), aExpression);
         } else {
-            final Value theException = aExpression.incomingDataFlows().get(0);
-            final Callable function = weakFunctionReference(WASMWriterUtils.toMethodName(BytecodeObjectTypeRef.fromRuntimeClass(MemoryManager.class), "logException", new BytecodeMethodSignature(BytecodePrimitiveTypeRef.VOID, new BytecodeTypeRef[] {BytecodeObjectTypeRef.fromRuntimeClass(Exception.class)})), aExpression);
-            final List<WASMValue> arguments = new ArrayList<>();
-            arguments.add(i32.c(0, aExpression));
-            arguments.add(toValue(theException));
-            flow.voidCall(function, arguments, aExpression);
             flow.unreachable(aExpression);
         }
     }
@@ -546,7 +553,7 @@ public class WASMSSAASTWriter {
         final BytecodeResolvedFields.FieldEntry theEntry = implementingClassForStaticField(BytecodeObjectTypeRef.fromUtf8Constant(aExpression.getField().getClassIndex().getClassConstant().getConstant()),
                 aExpression.getField().getNameAndTypeIndex().getNameAndType().getNameIndex().getName().stringValue());
 
-        final WASMMemoryLayouter.MemoryLayout theLayout = memoryLayouter.layoutFor(theEntry.getProvidingClass().getClassName());
+        final NativeMemoryLayouter.MemoryLayout theLayout = memoryLayouter.layoutFor(theEntry.getProvidingClass().getClassName());
         final int theMemoryOffset = theLayout.offsetForClassMember(theEntry.getValue().getName().stringValue());
 
         final List<Value> theIncomingData = aExpression.incomingDataFlows();
@@ -574,7 +581,7 @@ public class WASMSSAASTWriter {
 
     private void generatePutFieldExpression(final PutFieldExpression aExpression) {
 
-        final WASMMemoryLayouter.MemoryLayout theLayout = memoryLayouter.layoutFor(BytecodeObjectTypeRef.fromUtf8Constant(aExpression.getField().getClassIndex().getClassConstant().getConstant()));
+        final NativeMemoryLayouter.MemoryLayout theLayout = memoryLayouter.layoutFor(BytecodeObjectTypeRef.fromUtf8Constant(aExpression.getField().getClassIndex().getClassConstant().getConstant()));
         final int theMemoryOffset = theLayout.offsetForInstanceMember(aExpression.getField().getNameAndTypeIndex().getNameAndType().getNameIndex().getName().stringValue());
 
         final BytecodeLinkedClass theLinkedClass = linkerContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(aExpression.getField().getClassIndex().getClassConstant().getConstant()));
@@ -669,7 +676,7 @@ public class WASMSSAASTWriter {
             return byteValue((ByteValue) aValue);
         }
         if (aValue instanceof IntegerValue) {
-            return tntegerValue((IntegerValue) aValue);
+            return integerValue((IntegerValue) aValue);
         }
         if (aValue instanceof DirectInvokeMethodExpression) {
             return directMethodInvokeValue((DirectInvokeMethodExpression) aValue);
@@ -797,7 +804,122 @@ public class WASMSSAASTWriter {
         if (aValue instanceof IsNaNExpression) {
             return isNaN((IsNaNExpression) aValue);
         }
+        if (aValue instanceof NewInstanceFromDefaultConstructorExpression) {
+            return newInstanceFromDefaultConstructor((NewInstanceFromDefaultConstructorExpression) aValue);
+        }
+        if (aValue instanceof PtrOfExpression) {
+            return ptrOfExpression((PtrOfExpression) aValue);
+        }
+        if (aValue instanceof MethodTypeArgumentCheckExpression) {
+            return methodTypeArgumentCheckExpression((MethodTypeArgumentCheckExpression) aValue);
+        }
+        if (aValue instanceof ReinterpretAsNativeExpression) {
+            return reinterpretAsNativeExpression((ReinterpretAsNativeExpression) aValue);
+        }
+        if (aValue instanceof SuperTypeOfExpression) {
+            return superTypeOfExpression((SuperTypeOfExpression) aValue);
+        }
+        if (aValue instanceof HeapBaseExpression) {
+            return heapBaseExpression((HeapBaseExpression) aValue);
+        }
+        if (aValue instanceof DataEndExpression) {
+            return dataEndExpression((DataEndExpression) aValue);
+        }
+        if (aValue instanceof SystemHasStackExpression) {
+            return systmHasStackExpression((SystemHasStackExpression) aValue);
+        }
         throw new IllegalStateException("Not supported : " + aValue);
+    }
+
+    private WASMValue systmHasStackExpression(final SystemHasStackExpression aValue) {
+        return i32.c(1, aValue);
+    }
+
+    private WASMValue dataEndExpression(final DataEndExpression aValue) {
+        return i32.c(0, aValue);
+    }
+
+    private WASMValue heapBaseExpression(final HeapBaseExpression aValue) {
+        return i32.c(0, aValue);
+    }
+
+    private WASMValue superTypeOfExpression(final SuperTypeOfExpression aValue) {
+        final Function theResolverFunction = module.functionIndex().firstByLabel("superTypeOf");
+        return call(theResolverFunction, Collections.singletonList(toValue(aValue.incomingDataFlows().get(0))), aValue);
+    }
+
+    private WASMValue methodTypeValue(final MethodTypeExpression aValue) {
+        final BytecodeMethodSignature theSignature = aValue.getSignature();
+        final String theMethodTypeFactoryName = WASMWriterUtils.toMethodName("methodTypeFactory", theSignature);
+        ExportableFunction theFactoryFunction;
+        try {
+            theFactoryFunction = module.functionIndex().firstByLabel(theMethodTypeFactoryName);
+        } catch (final Exception e) {
+            theFactoryFunction = module.getFunctions().newFunction(theMethodTypeFactoryName, PrimitiveType.i32);
+            final Local data = theFactoryFunction.newLocal("data", PrimitiveType.i32);
+            final int length = 1 + theSignature.getArguments().length;
+            theFactoryFunction.flow.setLocal(data, newArray(i32.c(length, null)), null);
+
+            final Expressions f = theFactoryFunction.flow;
+            final java.util.function.BiFunction<BytecodeTypeRef, Integer, Void> theAdder = (aType, aIndex) -> {
+                final int offset = 20 + aIndex * 4;
+                if (aType.isPrimitive()) {
+                    final TypeRef.Native theNativeType = (TypeRef.Native) TypeRef.toType(aType);
+                    // Negative number to indicate it is a primitive type
+                    f.i32.store(offset, getLocal(data, null), i32.c(-theNativeType.ordinal(), null), aValue);
+                } else {
+                    // Positive number with the id of the class
+                    if (aType.isArray()) {
+                        final BytecodeLinkedClass theLinkedClass = linkerContext.resolveClass(BytecodeObjectTypeRef.fromRuntimeClass(Array.class));
+                        f.i32.store(offset, getLocal(data, null), i32.c(theLinkedClass.getUniqueId(), null), aValue);
+                    } else {
+                        final BytecodeLinkedClass theLinkedClass = linkerContext.resolveClass((BytecodeObjectTypeRef) aType);
+                        f.i32.store(offset, getLocal(data, null), i32.c(theLinkedClass.getUniqueId(), null), aValue);
+                    }
+                }
+                return null;
+            };
+            // Return type and arguments
+            theAdder.apply(theSignature.getReturnType(), 0);
+            for (int i=0;i<theSignature.getArguments().length;i++) {
+                final BytecodeTypeRef theArgument = theSignature.getArguments()[i];
+                theAdder.apply(theArgument, i + 1);
+            }
+
+            theFactoryFunction.flow.ret(getLocal(data, null), null);
+        }
+        return call(theFactoryFunction, Collections.emptyList(), aValue);
+    }
+
+    private WASMValue methodTypeArgumentCheckExpression(final MethodTypeArgumentCheckExpression aExpression) {
+        final TypeRef.Native theExpectedType = aExpression.getExpectedType();
+        final Value theMethodType = aExpression.incomingDataFlows().get(0);
+        final Value theIndex = aExpression.incomingDataFlows().get(1);
+
+        final WASMValue thePtr = i32.add(toValue(theMethodType), i32.mul(toValue(theIndex), i32.c(4, aExpression), aExpression), aExpression);
+        final WASMValue theExpectedValue = i32.c(- theExpectedType.ordinal(), null);
+        final WASMValue theRead = i32.load(20, thePtr, aExpression);
+        return i32.eq(theExpectedValue, theRead, aExpression);
+    }
+
+    private WASMValue reinterpretAsNativeExpression(final ReinterpretAsNativeExpression aExpression) {
+        final Value theValue = aExpression.incomingDataFlows().get(0);
+        switch (aExpression.getExpectedType()) {
+            case FLOAT:
+            case DOUBLE:
+                return f32.convert_sI32(toValue(theValue), aExpression);
+            default:
+                return toValue(theValue);
+        }
+    }
+
+    private WASMValue ptrOfExpression(final PtrOfExpression aValue) {
+        return toValue(aValue.incomingDataFlows().get(0));
+    }
+
+    private WASMValue newInstanceFromDefaultConstructor(final NewInstanceFromDefaultConstructorExpression aValue) {
+        final Value theClassRef = aValue.incomingDataFlows().get(0);
+        return call(weakFunctionReference(NEWINSTANCEHELPER, null), Collections.singletonList(toValue(theClassRef)), null);
     }
 
     private WASMValue isNaN(final IsNaNExpression aValue) {
@@ -812,6 +934,7 @@ public class WASMSSAASTWriter {
         final WeakFunctionReferenceCallable theFunction = weakFunctionReference(theMethodName, aValue);
 
         final List<WASMValue> theArguments = new ArrayList<>();
+        theArguments.add(i32.c(0, null));
         for (final Value theValue : aValue.incomingDataFlows()) {
             theArguments.add(toValue(theValue));
         }
@@ -905,10 +1028,41 @@ public class WASMSSAASTWriter {
     }
 
     private WASMValue methodRefValue(final MethodRefExpression aValue) {
+        final String theName = aValue.getMethodName();
+        final BytecodeMethodSignature theSignature = aValue.getSignature();
+        final BytecodeLinkedClass theClass = linkerContext.resolveClass(aValue.getClassName());
+
+        if (aValue.getReferenceKind() == BytecodeReferenceKind.REF_invokeStatic) {
+            final String theMethodName = WASMWriterUtils.toMethodName(
+                    aValue.getClassName(),
+                    aValue.getMethodName(),
+                    aValue.getSignature());
+
+            return weakFunctionTableReference(theMethodName, aValue);
+        }
+
+        final BytecodeResolvedMethods theMethods = theClass.resolvedMethods();
+        try {
+            final BytecodeResolvedMethods.MethodEntry theMethodEntry = theMethods.implementingClassOf(theName, theSignature);
+            final BytecodeMethod theMethod = theMethodEntry.getValue();
+
+            if (theMethod.isConstructor()) {
+                if (theMethod.getSignature().getArguments().length != 0) {
+                    throw new IllegalStateException("Constructor reference with more than zero arguments is not supported!");
+                }
+
+                final String theMethodName = WASMWriterUtils.toMethodName(theMethodEntry.getProvidingClass().getClassName(), "$newInstance", theSignature);
+                return weakFunctionTableReference(theMethodName, aValue);
+            }
+        } catch (IllegalArgumentException ex) {
+            // Method not found
+        }
+
         final String theMethodName = WASMWriterUtils.toMethodName(
                 aValue.getClassName(),
-                aValue.getMethodName(),
-                aValue.getSignature());
+                theName,
+                theSignature);
+
         return weakFunctionTableReference(theMethodName, aValue);
     }
 
@@ -928,13 +1082,6 @@ public class WASMSSAASTWriter {
     }
 
     private WASMValue currentException(final CurrentExceptionExpression aValue) {
-        return i32.c(0, aValue);
-    }
-
-    private WASMValue methodTypeValue(final MethodTypeExpression aValue) {
-//        print("(i32.const ");
-//        print(idResolver.resolveTypeIDForSignature(aValue.getSignature()));
-//        print(")");
         return i32.c(0, aValue);
     }
 
@@ -1018,7 +1165,7 @@ public class WASMSSAASTWriter {
         return getGlobal(resolver.globalForStringFromPool(aValue), null);
     }
 
-    private WASMExpression newArray(final Value aValue) {
+    private WASMExpression newArray(final WASMValue aValue) {
         final String theMethodName = WASMWriterUtils.toMethodName(
                 BytecodeObjectTypeRef.fromRuntimeClass(MemoryManager.class),
                 "newArray",
@@ -1028,7 +1175,11 @@ public class WASMSSAASTWriter {
         final WeakFunctionReferenceCallable theClassInit = weakFunctionReference(theClassName + CLASSINITSUFFIX, null);
         final Function theFunction = module.functionIndex().firstByLabel(theMethodName);
 
-        return call(theFunction, Arrays.asList(i32.c(0, null), toValue(aValue), call(theClassInit, Collections.emptyList(), null), weakFunctionTableReference(theClassName + VTABLEFUNCTIONSUFFIX, null)), null);
+        return call(theFunction, Arrays.asList(i32.c(0, null), aValue, call(theClassInit, Collections.emptyList(), null), weakFunctionTableReference(theClassName + VTABLEFUNCTIONSUFFIX, null)), null);
+    }
+
+    private WASMExpression newArray(final Value aValue) {
+        return newArray(toValue(aValue));
     }
 
     private WASMValue newArrayValue(final NewArrayExpression aValue) {
@@ -1051,26 +1202,33 @@ public class WASMSSAASTWriter {
         final List<Value> theVariables = theFlows.subList(1, theFlows.size());
 
         // Check if we are invoking something on an opaque type
-        final BytecodeVirtualMethodIdentifier theMethodIdentifier = linkerContext.getMethodCollection().identifierFor(aValue.getMethodName(), aValue.getSignature());
-        final List<BytecodeLinkedClass> theClasses = linkerContext.getAllClassesAndInterfacesWithMethod(theMethodIdentifier);
-        if (theClasses.size() == 1) {
-            final BytecodeLinkedClass theTargetClass = theClasses.get(0);
-            final BytecodeMethod theMethod = theTargetClass.getBytecodeClass().methodByNameAndSignatureOrNull(aValue.getMethodName(), aValue.getSignature());
-            if (theTargetClass.isOpaqueType() && !theMethod.isConstructor()) {
-                // At this point, we are creating a direct call invocation to the function
-                // Which is imported fom the WASM Host environment
-                final Callable function = weakFunctionReference(WASMWriterUtils.toMethodName(theTargetClass.getClassName(), aValue.getMethodName(), aValue.getSignature()), aValue);
-                final List<WASMValue> arguments = new ArrayList<>();
-                arguments.add(toValue(theTarget));
-                for (final Value theValue : theVariables) {
-                    arguments.add(toValue(theValue));
+        final BytecodeTypeRef theInvokedClassName = aValue.getInvokedClass();
+        if (!theInvokedClassName.isPrimitive() && !theInvokedClassName.isArray()) {
+            final BytecodeLinkedClass theInvokedClass = linkerContext.resolveClass((BytecodeObjectTypeRef) theInvokedClassName);
+            if (theInvokedClass.isOpaqueType()) {
+                final BytecodeResolvedMethods theMethods = theInvokedClass.resolvedMethods();
+                final List<BytecodeResolvedMethods.MethodEntry> theImplMethods = theMethods.stream().filter(
+                        t -> t.getValue().getName().stringValue().equals(aValue.getMethodName()) &&
+                                t.getValue().getSignature().matchesExactlyTo(aValue.getSignature()))
+                        .collect(Collectors.toList());
+                if (theImplMethods.size() != 1) {
+                    throw new IllegalStateException("Cannot find unique method " + aValue.getMethodName() + " with signature " + aValue.getSignature() + " in " + theInvokedClassName.name());
                 }
-                return call(function, arguments, aValue);
+                final BytecodeLinkedClass theImplClass = theImplMethods.get(0).getProvidingClass();
+                final BytecodeMethod theMethod = theImplMethods.get(0).getValue();
+                if (!theMethod.isConstructor()) {
+                    // At this point, we are creating a direct call invocation to the function
+                    // Which is imported fom the WASM Host environment
+                    final Callable function = weakFunctionReference(WASMWriterUtils
+                            .toMethodName(theImplClass.getClassName(), aValue.getMethodName(), aValue.getSignature()), aValue);
+                    final List<WASMValue> arguments = new ArrayList<>();
+                    arguments.add(toValue(theTarget));
+                    for (final Value theValue : theVariables) {
+                        arguments.add(toValue(theValue));
+                    }
+                    return call(function, arguments, aValue);
+                }
             }
-        }
-
-        if (!(theClasses.stream().noneMatch(BytecodeLinkedClass::isOpaqueType))) {
-            throw new IllegalStateException("There seems to be some confusion here, either multiple OpaqueTypes with method named \"" + aValue.getMethodName() + "\" or mix of Opaque and Non-Opaque virtual invocations in class list " + theClasses);
         }
 
         final List<PrimitiveType> theSignatureParams = new ArrayList<>();
@@ -1092,6 +1250,8 @@ public class WASMSSAASTWriter {
         for (final Value theValue : theVariables) {
             theArguments.add(toValue(theValue));
         }
+
+        final BytecodeVirtualMethodIdentifier theMethodIdentifier = linkerContext.getMethodCollection().identifierFor(aValue.getMethodName(), aValue.getSignature());
 
         final WASMType theResolveType = module.getTypes().typeFor(Arrays.asList(PrimitiveType.i32, PrimitiveType.i32), PrimitiveType.i32);
         final List<WASMValue> theResolveArgument = new ArrayList<>();
@@ -1220,7 +1380,7 @@ public class WASMSSAASTWriter {
         final BytecodeResolvedFields.FieldEntry theEntry = implementingClassForStaticField(BytecodeObjectTypeRef.fromUtf8Constant(aValue.getField().getClassIndex().getClassConstant().getConstant()),
                 aValue.getField().getNameAndTypeIndex().getNameAndType().getNameIndex().getName().stringValue());
 
-        final WASMMemoryLayouter.MemoryLayout theLayout = memoryLayouter.layoutFor(theEntry.getProvidingClass().getClassName());
+        final NativeMemoryLayouter.MemoryLayout theLayout = memoryLayouter.layoutFor(theEntry.getProvidingClass().getClassName());
         final int theMemoryOffset = theLayout.offsetForClassMember(theEntry.getValue().getName().stringValue());
 
         final String theClassName = WASMWriterUtils.toClassName(theEntry.getProvidingClass().getClassName());
@@ -1240,7 +1400,7 @@ public class WASMSSAASTWriter {
 
         final BytecodeObjectTypeRef theType = BytecodeObjectTypeRef.fromUtf8Constant(aValue.getType().getConstant());
 
-        final WASMMemoryLayouter.MemoryLayout theLayout = memoryLayouter.layoutFor(theType);
+        final NativeMemoryLayouter.MemoryLayout theLayout = memoryLayouter.layoutFor(theType);
 
         final String theMethodName = WASMWriterUtils.toMethodName(
                 BytecodeObjectTypeRef.fromRuntimeClass(MemoryManager.class),
@@ -1258,7 +1418,7 @@ public class WASMSSAASTWriter {
     private WASMValue getFieldValue(final GetFieldExpression aValue) {
         final BytecodeLinkedClass theLinkedClass = linkerContext.resolveClass(BytecodeObjectTypeRef.fromUtf8Constant(aValue.getField().getClassIndex().getClassConstant().getConstant()));
 
-        final WASMMemoryLayouter.MemoryLayout theLayout = memoryLayouter.layoutFor(BytecodeObjectTypeRef.fromUtf8Constant(aValue.getField().getClassIndex().getClassConstant().getConstant()));
+        final NativeMemoryLayouter.MemoryLayout theLayout = memoryLayouter.layoutFor(BytecodeObjectTypeRef.fromUtf8Constant(aValue.getField().getClassIndex().getClassConstant().getConstant()));
         final int theMemoryOffset = theLayout.offsetForInstanceMember(aValue.getField().getNameAndTypeIndex().getNameAndType().getNameIndex().getName().stringValue());
         final String theFieldName = aValue.getField().getNameAndTypeIndex().getNameAndType().getNameIndex().getName().stringValue();
 
@@ -1344,7 +1504,7 @@ public class WASMSSAASTWriter {
         return i32.c(aValue.getByteValue(), null);
     }
 
-    private I32Const tntegerValue(final IntegerValue aValue) {
+    private I32Const integerValue(final IntegerValue aValue) {
         return i32.c(aValue.getIntValue(), null);
     }
 

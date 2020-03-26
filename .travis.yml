@@ -1,9 +1,8 @@
-sudo: false
+os: linux
 
 addons:
   apt:
     packages:
-      - google-chrome-stable
       - ocl-icd-opencl-dev
 
 language: java
@@ -14,58 +13,64 @@ jdk:
   - openjdk12
   - openjdk13
 
-env:
-  global:
-    - CHROMEDRIVER_BINARY=~/chromedriver
-
 cache:
   directories:
     - $HOME/.m2
     - $HOME/.cache/install-jdk
 
 before_install:
-  - wget -N https://chromedriver.storage.googleapis.com/76.0.3809.68/chromedriver_linux64.zip -P ~/
-  - unzip ~/chromedriver_linux64.zip -d ~/
-  - rm ~/chromedriver_linux64.zip
-  - sudo chmod +x ~/chromedriver
-  - whereis google-chrome-stable
-  - whereis chromedriver
   - wget -N https://github.com/sormuras/bach/raw/master/install-jdk.sh -P ~/
   - sudo chmod +x ~/install-jdk.sh
   - sudo chmod +x .travis/deploy.sh
+  - sudo wget https://apt.llvm.org/llvm-snapshot.gpg.key
+  - sudo apt-key add llvm-snapshot.gpg.key
+  - sudo add-apt-repository -y "deb http://apt.llvm.org/xenial/   llvm-toolchain-xenial-10  main"
+  - sudo apt-get -q update
+  - sudo apt-get install -y clang-10 lldb-10 lld-10 clangd-10
 
-install: true
+install:
+  - wget https://github.com/gohugoio/hugo/releases/download/v0.59.0/hugo_0.59.0_Linux-64bit.tar.gz
+  - tar xzf hugo_0.59.0_Linux-64bit.tar.gz
+  - sudo chmod +x hugo
+  - git clone https://github.com/matcornic/hugo-theme-learn.git ./manual/themes/hugo-theme-learn
+
 
 script:
-  - mvn clean package -P jvmtestsonly
+  - mvn -B clean package -P jvmtestsonly
 
 jobs:
   include:
     - stage: "Compiler Target Tests"
       name: "JS Target OpenJDK 8"
-      script: mvn -pl '!:bytecoder-integrationtest' clean test -P jstestsonly
-    - script: mkdir /home/travis/openjdk11 && ~/install-jdk.sh -W /home/travis/openjdk11 -F 11 -L GPL && mvn -pl '!:bytecoder-integrationtest' clean test -P jstestsonly
+      script: mvn -B  -pl '!:bytecoder-integrationtest' clean test -P jstestsonly
+    - script: mkdir /home/travis/openjdk11 && ~/install-jdk.sh -W /home/travis/openjdk11 -F 11 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P jstestsonly
       name: "JS Target OpenJDK 11"
-    - script: mkdir /home/travis/openjdk12 && ~/install-jdk.sh -W /home/travis/openjdk12 -F 12 -L GPL && mvn -pl '!:bytecoder-integrationtest' clean test -P jstestsonly
+    - script: mkdir /home/travis/openjdk12 && ~/install-jdk.sh -W /home/travis/openjdk12 -F 12 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P jstestsonly
       name: "JS Target OpenJDK 12"
-    - script: mkdir /home/travis/openjdk13 && ~/install-jdk.sh -W /home/travis/openjdk13 -F 13 -L GPL && mvn -pl '!:bytecoder-integrationtest' clean test -P jstestsonly
+    - script: mkdir /home/travis/openjdk13 && ~/install-jdk.sh -W /home/travis/openjdk13 -F 13 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P jstestsonly
       name: "JS Target OpenJDK 13"
-    - script: mvn -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_reloop
+    - script: mkdir /home/travis/openjdk14 && ~/install-jdk.sh -W /home/travis/openjdk14 -F 14 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P jstestsonly
+      name: "JS Target OpenJDK 14"
+    - script: mvn -B -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_reloop
       name: "WASM Target Reloop OpenJDK 8"
-    - script: mkdir /home/travis/openjdk11 && ~/install-jdk.sh -W /home/travis/openjdk11 -F 11 -L GPL && mvn -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_reloop
+    - script: mkdir /home/travis/openjdk11 && ~/install-jdk.sh -W /home/travis/openjdk11 -F 11 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_reloop
       name: "WASM Target Reloop OpenJDK 11"
-    - script: mkdir /home/travis/openjdk12 && ~/install-jdk.sh -W /home/travis/openjdk12 -F 12 -L GPL && mvn -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_reloop
+    - script: mkdir /home/travis/openjdk12 && ~/install-jdk.sh -W /home/travis/openjdk12 -F 12 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_reloop
       name: "WASM Target Reloop OpenJDK 12"
-    - script: mkdir /home/travis/openjdk13 && ~/install-jdk.sh -W /home/travis/openjdk13 -F 13 -L GPL && mvn -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_reloop
+    - script: mkdir /home/travis/openjdk13 && ~/install-jdk.sh -W /home/travis/openjdk13 -F 13 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_reloop
       name: "WASM Target Reloop OpenJDK 13"
-    - script: mvn -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_stackify
+    - script: mvn -B -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_stackify
       name: "WASM Target Stackify OpenJDK 8"
-    - script: mkdir /home/travis/openjdk11 && ~/install-jdk.sh -W /home/travis/openjdk11 -F 11 -L GPL && mvn -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_stackify
+    - script: mkdir /home/travis/openjdk11 && ~/install-jdk.sh -W /home/travis/openjdk11 -F 11 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_stackify
       name: "WASM Target Stackify OpenJDK 11"
-    - script: mkdir /home/travis/openjdk12 && ~/install-jdk.sh -W /home/travis/openjdk12 -F 12 -L GPL && mvn -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_stackify
+    - script: mkdir /home/travis/openjdk12 && ~/install-jdk.sh -W /home/travis/openjdk12 -F 12 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_stackify
       name: "WASM Target Stackify OpenJDK 12"
-    - script: mkdir /home/travis/openjdk13 && ~/install-jdk.sh -W /home/travis/openjdk13 -F 13 -L GPL && mvn -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_stackify
+    - script: mkdir /home/travis/openjdk13 && ~/install-jdk.sh -W /home/travis/openjdk13 -F 13 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P wasmtestsonly_stackify
       name: "WASM Target Stackify OpenJDK 13"
+    - script: mvn -B -pl '!:bytecoder-integrationtest' clean test -P wasmllvmtestsonly
+      name: "LLVM WASM Target OpenJDK 8"
+    - script: mkdir /home/travis/openjdk14 && ~/install-jdk.sh -W /home/travis/openjdk14 -F 14 -L GPL && mvn -B -pl '!:bytecoder-integrationtest' clean test -P wasmllvmtestsonly
+      name: "LLVM WASM Target OpenJDK 14"
     - stage: "Deploy to Maven Central"
       script: skip
       deploy:
@@ -85,13 +90,13 @@ jobs:
             tags: true
             jdk: openjdk8
     - stage: "Deploy GitHub Pages"
-      script: mvn clean package -P notest
+      script: mvn clean package -P notest && ./hugo -s ./manual -d ../integrationtest/target/bytecoder-integrationtest
       deploy:
         - provider: pages
-          skip-cleanup: true
-          github-token: $GITHUB_TOKEN
-          keep-history: false
-          local-dir: integrationtest/target/bytecoder-integrationtest
+          skip_cleanup: true
+          github_token: $GITHUB_TOKEN
+          keep_history: false
+          local_dir: integrationtest/target/bytecoder-integrationtest
           on:
             repo: mirkosertic/Bytecoder
             branch: master
